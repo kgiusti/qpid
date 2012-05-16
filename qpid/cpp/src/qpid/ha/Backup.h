@@ -22,6 +22,7 @@
  *
  */
 
+#include "LogPrefix.h"
 #include "Settings.h"
 #include "qpid/Url.h"
 #include "qpid/sys/Mutex.h"
@@ -36,7 +37,6 @@ class Link;
 
 namespace ha {
 class Settings;
-class ConnectionExcluder;
 class BrokerReplicator;
 class HaBroker;
 
@@ -53,15 +53,17 @@ class Backup
     void setBrokerUrl(const Url&);
 
   private:
+    bool isSelf(const Address& a) const;
+    Url linkUrl(const Url&) const;
     void initialize(const Url&);
 
+    LogPrefix logPrefix;
     sys::Mutex lock;
     HaBroker& haBroker;
     broker::Broker& broker;
     Settings settings;
     boost::shared_ptr<broker::Link> link;
     boost::shared_ptr<BrokerReplicator> replicator;
-    boost::shared_ptr<ConnectionExcluder> excluder;
 };
 
 }} // namespace qpid::ha

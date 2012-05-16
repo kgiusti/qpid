@@ -19,6 +19,7 @@
 #
 
 import os, signal, sys, time, imp, re, subprocess, glob, random, logging, shutil, math
+import traceback
 from qpid.messaging import Message, NotFound, ConnectionError, ReceiverError, Connection
 from qpid.datatypes import uuid4
 from brokertest import *
@@ -28,13 +29,22 @@ from qpidtoollibs import BrokerAgent
 
 log = getLogger(__name__)
 
+class QmfHaBroker(object):
+    def __init__(self, address):
+        self.connection = Connection.establish(
+            address, client_properties={"qpid.ha-admin":1})
+        self.qmf = BrokerAgent(self.connection)
+        self.ha_broker = self.qmf.getHaBroker()
+        if not self.ha_broker:
+            raise Exception("HA module is not loaded on broker at %s"%address)
+
 class HaBroker(Broker):
     def __init__(self, test, args=[], broker_url=None, ha_cluster=True,
                  ha_replicate="all", **kwargs):
         assert BrokerTest.ha_lib, "Cannot locate HA plug-in"
         args = copy(args)
         args += ["--load-module", BrokerTest.ha_lib,
-                 "--log-enable=info+", "--log-enable=debug+:ha::",
+                 "--log-enable=debug+:ha::",
                  # FIXME aconway 2012-02-13: workaround slow link failover.
                  "--link-maintenace-interval=0.1",
                  "--ha-cluster=%s"%ha_cluster]
@@ -42,32 +52,31 @@ class HaBroker(Broker):
             args += [ "--ha-replicate=%s"%ha_replicate ]
         if broker_url: args.extend([ "--ha-brokers", broker_url ])
         Broker.__init__(self, test, args, **kwargs)
-        self.commands=os.getenv("PYTHON_COMMANDS")
-        assert os.path.isdir(self.commands)
+        self.qpid_ha_path=os.path.join(os.getenv("PYTHON_COMMANDS"), "qpid-ha")
+        assert os.path.exists(self.qpid_ha_path)
+        self.qpid_config_path=os.path.join(os.getenv("PYTHON_COMMANDS"), "qpid-config")
+        assert os.path.exists(self.qpid_config_path)
         getLogger().setLevel(ERROR) # Hide expected WARNING log messages from failover.
+        self.qpid_ha_script=import_script(self.qpid_ha_path)
 
-    def promote(self):
-        assert os.system("%s/qpid-ha promote -b %s"%(self.commands, self.host_port())) == 0
+    def qpid_ha(self, args): self.qpid_ha_script.main(["", "-b", self.host_port()]+args)
 
-    def set_client_url(self, url):
-        assert os.system(
-            "%s/qpid-ha set --public-brokers=%s -b %s"%(self.commands, url,self.host_port())) == 0
+    def promote(self): self.qpid_ha(["promote"])
+    def set_client_url(self, url): self.qpid_ha(["set", "--public-brokers", url])
+    def set_broker_url(self, url): self.qpid_ha(["set", "--brokers", url])
+    def replicate(self, from_broker, queue): self.qpid_ha(["replicate", from_broker, queue])
+    def ha_status(self): QmfHaBroker(self.host_port()).ha_broker.status
 
-    def set_broker_url(self, url):
-        assert os.system(
-            "%s/qpid-ha set --brokers=%s -b %s"%(self.commands, url, self.host_port())) == 0
-
-    def replicate(self, from_broker, queue):
-        assert os.system(
-            "%s/qpid-ha replicate -b %s %s %s"%(self.commands, self.host_port(), from_broker, queue)) == 0
+    # FIXME aconway 2012-05-01: do direct python call to qpid-config code.
+    def qpid_config(self, args):
+        assert subprocess.call(
+            [self.qpid_config_path, "--broker", self.host_port()]+args) == 0
 
     def config_replicate(self, from_broker, queue):
-        assert os.system(
-            "%s/qpid-config --broker=%s add queue --start-replica %s %s"%(self.commands, self.host_port(), from_broker, queue)) == 0
+        self.qpid_config(["add", "queue", "--start-replica", from_broker, queue])
 
     def config_declare(self, queue, replication):
-        assert os.system(
-            "%s/qpid-config --broker=%s add queue %s --replicate %s"%(self.commands, self.host_port(), queue, replication)) == 0
+        self.qpid_config(["add", "queue", queue, "--replicate", replication])
 
     def connect_admin(self, **kwargs):
         return Broker.connect(self, client_properties={"qpid.ha-admin":1}, **kwargs)
@@ -86,33 +95,67 @@ class HaBroker(Broker):
             assert_browse_retry(bs, queue, expected, **kwargs)
         finally: bs.connection.close()
 
+    def assert_connect_fail(self):
+        try:
+            self.connect()
+            self.test.fail("Expected ConnectionError")
+        except ConnectionError: pass
+
+    def try_connect(self):
+        try: return self.connect()
+        except ConnectionError: return None
+
 class HaCluster(object):
     _cluster_count = 0
 
     def __init__(self, test, n, **kwargs):
         """Start a cluster of n brokers"""
         self.test = test
-        self._brokers = [ HaBroker(test, name="broker%s-%s"%(HaCluster._cluster_count, i), **kwargs) for i in xrange(n)]
+        self.kwargs = kwargs
+        self._brokers = []
+        self.id = HaCluster._cluster_count
+        self.broker_id = 0
         HaCluster._cluster_count += 1
+        for i in xrange(n): self.start(False)
+        self.update_urls()
+        self[0].promote()
+
+    def next_name(self):
+        name="cluster%s-%s"%(self.id, self.broker_id)
+        self.broker_id += 1
+        return name
+
+    def start(self, update_urls=True):
+        """Start a new broker in the cluster"""
+        b = HaBroker(self.test, name=self.next_name(), **self.kwargs)
+        self._brokers.append(b)
+        if update_urls: self.update_urls()
+        return b
+
+    def update_urls(self):
         self.url = ",".join([b.host_port() for b in self])
         for b in self: b.set_broker_url(self.url)
-        self[0].promote()
 
     def connect(self, i):
         """Connect with reconnect_urls"""
         return self[i].connect(reconnect=True, reconnect_urls=self.url.split(","))
 
-    def kill(self, i):
+    def kill(self, i, promote_next=True):
         """Kill broker i, promote broker i+1"""
-        self[i].kill()
         self[i].expect = EXPECT_EXIT_FAIL
-        self[(i+1) % len(self)].promote()
+        self[i].kill()
+        if promote_next: self[(i+1) % len(self)].promote()
 
-    def bounce(self, i):
+    def restart(self, i):
+        b = self._brokers[i]
+        self._brokers[i] = HaBroker(
+            self.test, name=self.next_name(), port=b.port(), broker_url=self.url,
+            **self.kwargs)
+
+    def bounce(self, i, promote_next=True):
         """Stop and restart a broker in a cluster."""
-        self.kill(i)
-        b = self[i]
-        self._brokers[i] = HaBroker(self.test, name=b.name, port=b.port(), broker_url=self.url)
+        self.kill(i, promote_next)
+        self.restart(i)
 
     # Behave like a list of brokers.
     def __len__(self): return len(self._brokers)
@@ -344,6 +387,7 @@ class ReplicationTests(BrokerTest):
 
     def test_standalone_queue_replica(self):
         """Test replication of individual queues outside of cluster mode"""
+        getLogger().setLevel(ERROR) # Hide expected WARNING log messages from failover.
         primary = HaBroker(self, name="primary", ha_cluster=False)
         pc = primary.connect()
         ps = pc.session().sender("q;{create:always}")
@@ -559,6 +603,27 @@ class ReplicationTests(BrokerTest):
         test("excl_sub;{create:always, link:{x-subscribe:{exclusive:True}}}");
         test("excl_queue;{create:always, node:{x-declare:{exclusive:True}}}")
 
+    def test_recovering(self):
+        """Verify that the primary broker does not go active until expected
+        backups have connected or timeout expires."""
+        cluster = HaCluster(self, 3, args=["--ha-expected-backups=2"])
+        c = cluster[0].connect()
+        for i in xrange(10):
+            s = c.session().sender("q%s;{create:always}"%i)
+            for j in xrange(100): s.send(str(j))
+        cluster.kill(0)         # Fail over to 1
+        cluster[1].assert_connect_fail() # Waiting for backups, won't accept clients.
+        cluster.restart(0)
+        c = retry(cluster[1].try_connect)
+        self.assertTrue(c)
+        cluster[1].assert_browse_backup("q0", [str(i) for i in xrange(100)]);
+
+        # Verify in logs that all queue catch-up happened before the transition to active.
+        log = open(cluster[1].log).read()
+        i = log.find("Status change: recovering -> active")
+        self.failIf(i < 0)
+        self.assertEqual(log.find("caught up", i), -1)
+
 def fairshare(msgs, limit, levels):
     """
     Generator to return prioritised messages in expected order for a given fairshare limit
@@ -602,48 +667,50 @@ class LongTests(BrokerTest):
         else: return 3                  # Default is to be quick
 
 
-    def disable_test_failover(self):
+    # FIXME aconway 2012-05-15: disabled till functionality fixed.
+    def disable_test_failover_send_receive(self):
         """Test failover with continuous send-receive"""
-        # FIXME aconway 2012-02-03: fails due to dropped messages,
-        # known issue: sending messages to new primary before
-        # backups are ready. Enable when fixed.
-
         # Start a cluster, all members will be killed during the test.
-        brokers = [ HaBroker(self, name=name, expect=EXPECT_EXIT_FAIL)
-                    for name in ["ha0","ha1","ha2"] ]
-        url = ",".join([b.host_port() for b in brokers])
-        for b in brokers: b.set_broker_url(url)
-        brokers[0].promote()
+        # FIXME aconway 2012-05-01: try expected-backups=1, requires catchup-ready fixed.
+        brokers = HaCluster(self, 3, args=["--ha-expected-backups=2"])
 
         # Start sender and receiver threads
         sender = NumberedSender(brokers[0], max_depth=1000, failover_updates=False)
         receiver = NumberedReceiver(brokers[0], sender=sender, failover_updates=False)
         receiver.start()
         sender.start()
+
         # Wait for sender & receiver to get up and running
         assert retry(lambda: receiver.received > 100)
         # Kill and restart brokers in a cycle:
         endtime = time.time() + self.duration()
         i = 0
-        while time.time() < endtime or i < 3: # At least 3 iterations
-            sender.sender.assert_running()
-            receiver.receiver.assert_running()
-            port = brokers[i].port()
-            brokers[i].kill()
-            brokers.append(
-                HaBroker(self, name="ha%d"%(i+3), broker_url=url, port=port,
-                         expect=EXPECT_EXIT_FAIL))
-            i += 1
-            brokers[i].promote()
-            n = receiver.received       # Verify we're still running
-            def enough():
-                receiver.check()        # Verify no exceptions
-                return receiver.received > n + 100
-            assert retry(enough, timeout=5)
-
-        sender.stop()
-        receiver.stop()
-        for b in brokers[i:]: b.kill()
+        try:
+            while time.time() < endtime or i < 3: # At least 3 iterations
+                sender.sender.assert_running()
+                receiver.receiver.assert_running()
+                n = receiver.received
+                # FIXME aconway 2012-05-01: don't kill primary till it's active
+                # otherwise we can lose messages. This is in lieu of not
+                # promoting catchup brokers.
+                assert retry(brokers[i%3].try_connect, 1)
+                brokers.bounce(i%3)
+                i += 1
+                def enough():        # Verify we're still running
+                    receiver.check()        # Verify no exceptions
+                    return receiver.received > n + 100
+                assert retry(enough, 1)
+        except:
+            traceback.print_exc()
+            raise
+        finally:
+            sender.stop()
+            receiver.stop()
+            dead = []
+            for i in xrange(3):
+                if not brokers[i].is_running(): dead.append(i)
+                brokers.kill(i, False)
+            if dead: raise Exception("Brokers not running: %s"%dead)
 
 if __name__ == "__main__":
     shutil.rmtree("brokertest.tmp", True)

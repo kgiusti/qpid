@@ -52,7 +52,6 @@ Primary::Primary(HaBroker& b) :
             QPID_LOG(debug, logPrefix << "Need backup of " << *i
                      << ", " << unready << " unready queues");
         }
-        QPID_LOG(critical, "FIXME Primary " << queues.size() << " queues");
         if (queues.empty())
             activate(*(sys::Mutex::ScopedLock*)0); // fake lock, ok in ctor.
         else {
@@ -64,7 +63,7 @@ Primary::Primary(HaBroker& b) :
     }
 }
 
-void Primary::addReplica(const std::string& q) {
+void Primary::readyReplica(const std::string& q) {
     sys::Mutex::ScopedLock l(lock);
     if (!activated) {
         QueueCounts::iterator i = queues.find(q);
