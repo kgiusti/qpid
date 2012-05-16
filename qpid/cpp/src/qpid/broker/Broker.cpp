@@ -790,6 +790,7 @@ void Broker::createObject(const std::string& type, const std::string& name,
         std::string key;
         std::string id;
         std::string excludes;
+        std::string queueName;
         bool durable = false;
         bool srcIsQueue = false;
         bool srcIsLocal = false;
@@ -809,6 +810,7 @@ void Broker::createObject(const std::string& type, const std::string& name,
             else if (i->first == DYNAMIC) dynamic = bool(i->second);
             else if (i->first == SYNC) sync = i->second.asUint16();
             else if (i->first == DURABLE) durable = bool(i->second);
+            else if (i->first == QUEUE_NAME) queueName = i->second.asString();
             else {
                 // TODO: strict checking here
             }
@@ -821,7 +823,9 @@ void Broker::createObject(const std::string& type, const std::string& name,
         }
         std::pair<Bridge::shared_ptr, bool> rc =
           links.declare(name, *link, durable, src, dest, key, srcIsQueue, srcIsLocal, id, excludes,
-                        dynamic, sync);
+                        dynamic, sync,
+                        0,
+                        queueName);
 
         if (!rc.first) {
             QPID_LOG (error, "Failed to create Bridge object, name=" << name << " link=" << linkName <<
