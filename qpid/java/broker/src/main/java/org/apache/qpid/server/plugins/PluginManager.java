@@ -22,6 +22,9 @@ import org.apache.commons.configuration.ConfigurationException;
 import org.apache.felix.framework.Felix;
 import org.apache.felix.framework.util.StringMap;
 import org.apache.log4j.Logger;
+import org.apache.qpid.server.security.auth.manager.AnonymousAuthenticationManager;
+import org.apache.qpid.server.security.auth.manager.KerberosAuthenticationManager;
+import org.apache.qpid.server.security.auth.manager.SimpleLDAPAuthenticationManager;
 import org.osgi.framework.BundleActivator;
 import org.osgi.framework.BundleContext;
 import org.osgi.framework.BundleException;
@@ -156,7 +159,10 @@ public class PluginManager implements Closeable
                 new SlowConsumerDetectionConfigurationFactory(),
                 new SlowConsumerDetectionPolicyConfigurationFactory(),
                 new SlowConsumerDetectionQueueConfigurationFactory(),
-                PrincipalDatabaseAuthenticationManager.PrincipalDatabaseAuthenticationManagerConfiguration.FACTORY))
+                PrincipalDatabaseAuthenticationManager.PrincipalDatabaseAuthenticationManagerConfiguration.FACTORY,
+                AnonymousAuthenticationManager.AnonymousAuthenticationManagerConfiguration.FACTORY,
+                KerberosAuthenticationManager.KerberosAuthenticationManagerConfiguration.FACTORY,
+                SimpleLDAPAuthenticationManager.SimpleLDAPAuthenticationManagerConfiguration.FACTORY))
         {
             _configPlugins.put(configFactory.getParentPaths(), configFactory);
         }
@@ -172,7 +178,8 @@ public class PluginManager implements Closeable
         }
 
         for (AuthenticationManagerPluginFactory<? extends Plugin> pluginFactory : Arrays.asList(
-                PrincipalDatabaseAuthenticationManager.FACTORY))
+                PrincipalDatabaseAuthenticationManager.FACTORY, AnonymousAuthenticationManager.FACTORY,
+                KerberosAuthenticationManager.FACTORY, SimpleLDAPAuthenticationManager.FACTORY))
         {
             _authenticationManagerPlugins.put(pluginFactory.getPluginName(), pluginFactory);
         }

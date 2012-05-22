@@ -15,23 +15,34 @@
  * KIND, either express or implied.  See the License for the
  * specific language governing permissions and limitations
  * under the License.
- *
  */
-package org.apache.qpid.server.store;
+package org.apache.qpid.server.registry;
 
-public class TestableMemoryMessageStoreFactory implements MessageStoreFactory
+import org.apache.commons.configuration.ConfigurationException;
+import org.apache.qpid.server.configuration.ServerConfiguration;
+import org.apache.qpid.server.logging.NullRootMessageLogger;
+import org.apache.qpid.server.logging.actors.BrokerActor;
+import org.apache.qpid.server.logging.actors.CurrentActor;
+import org.apache.qpid.server.logging.actors.GenericActor;
+
+class TestableApplicationRegistry extends ApplicationRegistry
 {
 
-    @Override
-    public MessageStore createMessageStore()
+    public TestableApplicationRegistry(ServerConfiguration config) throws ConfigurationException
     {
-        return new TestableMemoryMessageStore();
+        super(config);
     }
 
     @Override
-    public String getStoreClassName()
+    public void initialise() throws Exception
     {
-        return TestableMemoryMessageStore.class.getSimpleName();
+        CurrentActor.setDefault(new BrokerActor(new NullRootMessageLogger()));
+        GenericActor.setDefaultMessageLogger(new NullRootMessageLogger());
+        super.initialise();
     }
+
+
 
 }
+
+

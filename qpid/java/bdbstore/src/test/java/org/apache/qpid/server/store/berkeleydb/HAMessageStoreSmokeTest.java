@@ -17,21 +17,27 @@
  * under the License.
  *
  */
-package org.apache.qpid.server.store;
+package org.apache.qpid.server.store.berkeleydb;
 
-public class SlowMessageStoreFactory implements MessageStoreFactory
+import org.apache.commons.configuration.ConfigurationException;
+import org.apache.commons.configuration.XMLConfiguration;
+import org.apache.qpid.test.utils.QpidTestCase;
+
+public class HAMessageStoreSmokeTest extends QpidTestCase
 {
+    private final BDBHAMessageStore _store = new BDBHAMessageStore();
+    private final XMLConfiguration _config = new XMLConfiguration();
 
-    @Override
-    public MessageStore createMessageStore()
+    public void testMissingHAConfigThrowsException() throws Exception
     {
-        return new SlowMessageStore();
+        try
+        {
+            _store.configure("test", _config);
+            fail("Expected an exception to be thrown");
+        }
+        catch (ConfigurationException ce)
+        {
+            assertTrue(ce.getMessage().contains("BDB HA configuration key not found"));
+        }
     }
-
-    @Override
-    public String getStoreClassName()
-    {
-        return SlowMessageStore.class.getSimpleName();
-    }
-
 }

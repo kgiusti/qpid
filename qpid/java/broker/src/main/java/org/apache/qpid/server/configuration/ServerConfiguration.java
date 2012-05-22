@@ -581,6 +581,27 @@ public class ServerConfiguration extends ConfigurationPlugin
         return getBooleanValue("security.msg-auth");
     }
 
+    public String getDefaultAuthenticationManager()
+    {
+        return getStringValue("security.default-auth-manager");
+    }
+
+
+    public Map<Integer, String> getPortAuthenticationMappings()
+    {
+        String[] ports = getConfig().getStringArray("security.port-mappings.port-mapping.port");
+        String[] authManagers = getConfig().getStringArray("security.port-mappings.port-mapping.auth-manager");
+
+        Map<Integer,String> portMappings = new HashMap<Integer, String>();
+        for(int i = 0; i < ports.length; i++)
+        {
+            portMappings.put(Integer.valueOf(ports[i]), authManagers[i]);
+        }
+
+        return portMappings;
+    }
+
+
     public String getManagementKeyStorePath()
     {
         final String fallback = getStringValue("management.ssl.keystorePath");
@@ -722,7 +743,7 @@ public class ServerConfiguration extends ConfigurationPlugin
     {
         return getBooleanValue("connector.ssl.sslOnly");
     }
-
+    
     public List getSSLPorts()
     {
         return getListValue("connector.ssl.port", Collections.<Integer>singletonList(DEFAULT_SSL_PORT));
@@ -738,6 +759,11 @@ public class ServerConfiguration extends ConfigurationPlugin
     {
         final String fallback = getStringValue("connector.ssl.keystorePassword"); // pre-0.13 brokers supported this name.
         return getStringValue("connector.ssl.keyStorePassword", fallback);
+    }
+
+    public String getConnectorKeyStoreType()
+    {
+        return getStringValue("connector.ssl.keyStoreType", "JKS");
     }
 
     public String getConnectorKeyManagerFactoryAlgorithm()

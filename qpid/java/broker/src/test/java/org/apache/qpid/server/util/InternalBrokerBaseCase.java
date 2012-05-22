@@ -20,8 +20,7 @@
  */
 package org.apache.qpid.server.util;
 
-import java.util.UUID;
-
+import org.apache.commons.configuration.ConfigurationException;
 import org.apache.commons.configuration.XMLConfiguration;
 
 import org.apache.qpid.AMQException;
@@ -45,7 +44,6 @@ import org.apache.qpid.server.registry.ApplicationRegistry;
 import org.apache.qpid.server.registry.IApplicationRegistry;
 import org.apache.qpid.server.store.MessageStore;
 import org.apache.qpid.server.store.TestableMemoryMessageStore;
-import org.apache.qpid.server.store.TestableMemoryMessageStoreFactory;
 import org.apache.qpid.server.virtualhost.VirtualHost;
 import org.apache.qpid.test.utils.QpidTestCase;
 
@@ -68,10 +66,10 @@ public class InternalBrokerBaseCase extends QpidTestCase
         super.setUp();
 
         _configXml.addProperty("virtualhosts.virtualhost.name", "test");
-        _configXml.addProperty("virtualhosts.virtualhost.test.store.factoryclass", TestableMemoryMessageStoreFactory.class.getName());
+        _configXml.addProperty("virtualhosts.virtualhost.test.store.class", TestableMemoryMessageStore.class.getName());
 
         _configXml.addProperty("virtualhosts.virtualhost(-1).name", getName());
-        _configXml.addProperty("virtualhosts.virtualhost(-1)."+getName()+".store.factoryclass", TestableMemoryMessageStoreFactory.class.getName());
+        _configXml.addProperty("virtualhosts.virtualhost(-1)."+getName()+".store.class", TestableMemoryMessageStore.class.getName());
 
         createBroker();
     }
@@ -85,7 +83,7 @@ public class InternalBrokerBaseCase extends QpidTestCase
 
         configure();
 
-        _registry = new TestApplicationRegistry(_configuration);
+        _registry = createApplicationRegistry();
         ApplicationRegistry.initialise(_registry);
         _registry.getVirtualHostRegistry().setDefaultVirtualHostName(getName());
         _virtualHost = _registry.getVirtualHostRegistry().getVirtualHost(getName());
@@ -117,6 +115,11 @@ public class InternalBrokerBaseCase extends QpidTestCase
         _channel = new AMQChannel(_session, 1, _messageStore);
 
         _session.addChannel(_channel);
+    }
+
+    protected IApplicationRegistry createApplicationRegistry() throws ConfigurationException
+    {
+        return new TestApplicationRegistry(_configuration);
     }
 
     protected void configure()
