@@ -146,6 +146,7 @@ class Bridge : public PersistableConfig,
     boost::shared_ptr<ErrorListener> errorListener;
 
     const bool useExistingQueue;
+    const std::string sessionName;
 };
 
 

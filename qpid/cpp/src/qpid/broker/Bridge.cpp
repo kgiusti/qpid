@@ -62,9 +62,11 @@ Bridge::Bridge(const std::string& _name, Link* _link, framing::ChannelId _id,
                InitializeCallback init, const std::string& _queueName) :
     link(_link), channel(_id), args(_args), mgmtObject(0),
     listener(l), name(_name),
-    queueName(_queueName.empty() ? "qpid.bridge_queue_" + Uuid(true).str() : _queueName),
+    queueName(_queueName.empty() ? "qpid.bridge_queue_" + name + "_" + link->getBroker()->getFederationTag()
+              : _queueName),
     persistenceId(0), connState(0), conn(0), initialize(init), detached(false),
-    useExistingQueue(!_queueName.empty())
+    useExistingQueue(!_queueName.empty()),
+    sessionName("qpid.bridge_session_" + name + "_" + link->getBroker()->getFederationTag())
 {
     ManagementAgent* agent = link->getBroker()->getManagementAgent();
     if (agent != 0) {
@@ -92,6 +94,7 @@ void Bridge::create(Connection& c)
     if (args.i_sync) options.setInt("qpid.sync_frequency", args.i_sync);
     SessionHandler& sessionHandler = c.getChannel(channel);
     sessionHandler.setErrorListener(shared_from_this());
+    std::string sessionName = queueName + Uuid(true).str();
     if (args.i_srcIsLocal) {
         if (args.i_dynamic)
             throw Exception("Dynamic routing not supported for push routes");
@@ -102,10 +105,10 @@ void Bridge::create(Connection& c)
         session.reset(new framing::AMQP_ServerProxy::Session(*channelHandler));
         peer.reset(new framing::AMQP_ServerProxy(*channelHandler));
 
-        session->attach(queueName, false);
+        session->attach(sessionName, false);
         session->commandPoint(0,0);
     } else {
-        sessionHandler.attachAs(queueName);
+        sessionHandler.attachAs(sessionName);
         // Point the bridging commands at the remote peer broker
         peer.reset(new framing::AMQP_ServerProxy(sessionHandler.out));
     }
@@ -163,7 +166,7 @@ void Bridge::cancel(Connection&)
 {
     if (resetProxy()) {
         peer->getMessage().cancel(args.i_dest);
-        peer->getSession().detach(queueName);
+        peer->getSession().detach(sessionName);
     }
     QPID_LOG(debug, "Cancelled bridge " << name);
 }
