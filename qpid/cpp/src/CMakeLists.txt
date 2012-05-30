@@ -628,6 +628,8 @@ if (BUILD_HA)
     set (ha_SOURCES
         qpid/ha/Backup.cpp
         qpid/ha/Backup.h
+	qpid/ha/BrokerInfo.h
+	qpid/ha/BrokerInfo.cpp
         qpid/ha/BrokerReplicator.cpp
         qpid/ha/BrokerReplicator.h
         qpid/ha/ConnectionExcluder.cpp
@@ -674,6 +676,11 @@ include (ssl.cmake)
 # Check for syslog capabilities not present on all systems
 check_symbol_exists (LOG_AUTHPRIV "sys/syslog.h" HAVE_LOG_AUTHPRIV)
 check_symbol_exists (LOG_FTP "sys/syslog.h" HAVE_LOG_FTP)
+  
+# Set default Memory Status module (Null implementation)
+set (qpid_memstat_module
+  qpid/sys/MemStat.cpp
+)
 
 # Allow MSVC user to select 'WinXP-SP3/Windows Server 2003' as build target version
 set (win32_winnt_default OFF)
@@ -736,7 +743,6 @@ if (CMAKE_SYSTEM_NAME STREQUAL Windows)
     qpid/sys/windows/SystemInfo.cpp
     qpid/sys/windows/Thread.cpp
     qpid/sys/windows/Time.cpp
-    qpid/sys/windows/MemStat.cpp
     qpid/client/windows/SaslFactory.cpp
     ${sslcommon_windows_SOURCES}
   )
@@ -782,16 +788,34 @@ else (CMAKE_SYSTEM_NAME STREQUAL Windows)
     )
   endif (POLLER STREQUAL poll)
 
+  # Set default System Info module
+  set (qpid_system_module
+    qpid/sys/posix/SystemInfo.cpp
+  )
+
   if (CMAKE_SYSTEM_NAME STREQUAL Linux)
-    set (qpid_system_module
-      qpid/sys/posix/SystemInfo.cpp
-    )
     add_definitions(-pthread)
     set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pthread")
     if (CMAKE_COMPILER_IS_GNUCXX)
       set (CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} ${GCC_CATCH_UNDEFINED} -pthread")
     endif (CMAKE_COMPILER_IS_GNUCXX)
+    # On Linux override memory status module
+    set (qpid_memstat_module
+      qpid/sys/posix/MemStat.cpp
+    ) 
   endif (CMAKE_SYSTEM_NAME STREQUAL Linux)
+
+  if (CMAKE_SYSTEM_NAME STREQUAL SunOS)
+    # On Solaris override the system info module
+    set (qpid_system_module
+      qpid/sys/solaris/SystemInfo.cpp
+    )
+    # On Sun we want -lpthread -lthread as the 2nd last and last libs passed to linker
+    set (qpidtypes_platform_LIBS ${qpidtypes_platform_LIBS}
+      pthread
+      thread
+    )
+  endif (CMAKE_SYSTEM_NAME STREQUAL SunOS)
 
   set (qpidtypes_platform_SOURCES)
   set (qpidtypes_platform_LIBS
@@ -799,24 +823,12 @@ else (CMAKE_SYSTEM_NAME STREQUAL Windows)
        ${Boost_SYSTEM_LIBRARY}
   )
 
-  if (CMAKE_SYSTEM_NAME STREQUAL SunOS)
-    set (qpid_system_module
-      qpid/sys/solaris/SystemInfo.cpp
-    )
-#   On Sun we want -lpthread -lthread as the 2nd last and last libs passed to linker
-    set (qpidtypes_platform_LIBS ${qpidtypes_platform_LIBS}
-      pthread
-      thread
-    )
-  endif (CMAKE_SYSTEM_NAME STREQUAL SunOS)
-
   set (qpidcommon_platform_SOURCES
     qpid/sys/posix/AsynchIO.cpp
     qpid/sys/posix/Fork.cpp
     qpid/sys/posix/FileSysDir.cpp
     qpid/sys/posix/IOHandle.cpp
     qpid/sys/posix/LockFile.cpp
-    qpid/sys/posix/MemStat.cpp
     qpid/sys/posix/Mutex.cpp
     qpid/sys/posix/PipeHandle.cpp
     qpid/sys/posix/PollableCondition.cpp
@@ -919,6 +931,7 @@ set (qpidcommon_SOURCES
      qpid/sys/Timer.cpp
      qpid/sys/TimerWarnings.cpp
      qpid/amqp_0_10/Codecs.cpp
+     ${qpid_memstat_module}
 )
 add_msvc_version (qpidcommon library dll)
 
