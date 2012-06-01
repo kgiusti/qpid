@@ -94,7 +94,6 @@ void Bridge::create(Connection& c)
     if (args.i_sync) options.setInt("qpid.sync_frequency", args.i_sync);
     SessionHandler& sessionHandler = c.getChannel(channel);
     sessionHandler.setErrorListener(shared_from_this());
-    std::string sessionName = queueName + Uuid(true).str();
     if (args.i_srcIsLocal) {
         if (args.i_dynamic)
             throw Exception("Dynamic routing not supported for push routes");
