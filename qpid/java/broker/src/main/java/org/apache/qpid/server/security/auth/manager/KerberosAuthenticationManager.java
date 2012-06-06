@@ -19,6 +19,7 @@
 package org.apache.qpid.server.security.auth.manager;
 
 import java.io.IOException;
+import java.security.Principal;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -126,7 +127,7 @@ public class KerberosAuthenticationManager implements AuthenticationManager
     }
 
     @Override
-    public SaslServer createSaslServer(String mechanism, String localFQDN) throws SaslException
+    public SaslServer createSaslServer(String mechanism, String localFQDN, Principal externalPrincipal) throws SaslException
     {
         if(GSSAPI_MECHANISM.equals(mechanism))
         {
@@ -178,19 +179,6 @@ public class KerberosAuthenticationManager implements AuthenticationManager
     public AuthenticationResult authenticate(String username, String password)
     {
         return new AuthenticationResult(AuthenticationResult.AuthenticationStatus.ERROR);
-    }
-
-    @Override
-    public CallbackHandler getHandler(String mechanism)
-    {
-        if(GSSAPI_MECHANISM.equals(mechanism))
-        {
-            return _callbackHandler;
-        }
-        else
-        {
-            return null;
-        }
     }
 
     @Override

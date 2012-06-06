@@ -20,22 +20,16 @@
  */
 package org.apache.qpid.server.security.auth.rmi;
 
-import java.util.Map;
+import java.security.Principal;
 import junit.framework.TestCase;
 
-import org.apache.commons.configuration.ConfigurationException;
-import org.apache.commons.configuration.XMLConfiguration;
-import org.apache.qpid.server.configuration.ServerConfiguration;
 import org.apache.qpid.server.configuration.plugins.ConfigurationPlugin;
-import org.apache.qpid.server.registry.ApplicationRegistry;
 import org.apache.qpid.server.security.auth.AuthenticationResult;
 import org.apache.qpid.server.security.auth.AuthenticationResult.AuthenticationStatus;
 import org.apache.qpid.server.security.auth.manager.AuthenticationManager;
-import org.apache.qpid.server.util.TestApplicationRegistry;
 
 import javax.management.remote.JMXPrincipal;
 import javax.security.auth.Subject;
-import javax.security.auth.callback.CallbackHandler;
 import javax.security.sasl.SaslException;
 import javax.security.sasl.SaslServer;
 import java.util.Collections;
@@ -77,14 +71,14 @@ public class RMIPasswordAuthenticatorTest extends TestCase
                 newSubject.equals(expectedSubject));
 
     }
-    
+
     /**
      * Tests a unsuccessful authentication.
      */
     public void testUsernameOrPasswordInvalid()
     {
         _rmipa.setAuthenticationManager(createTestAuthenticationManager(false, null));
-        
+
         try
         {
             _rmipa.authenticate(_credentials);
@@ -123,17 +117,7 @@ public class RMIPasswordAuthenticatorTest extends TestCase
      */
     public void testNullAuthenticationManager() throws Exception
     {
-        ServerConfiguration serverConfig = new ServerConfiguration(new XMLConfiguration());
-        TestApplicationRegistry reg = new TestApplicationRegistry(serverConfig)
-        {
-            @Override
-            protected Map<Integer, AuthenticationManager> createAuthenticationManagers() throws ConfigurationException
-            {
-                return Collections.emptyMap();
-            }
-        };
-        ApplicationRegistry.initialise(reg);
-
+        _rmipa.setAuthenticationManager(null);
         try
         {
             _rmipa.authenticate(_credentials);
@@ -143,10 +127,6 @@ public class RMIPasswordAuthenticatorTest extends TestCase
         {
             assertEquals("Unexpected exception message",
                     RMIPasswordAuthenticator.UNABLE_TO_LOOKUP, se.getMessage());
-        }
-        finally
-        {
-            ApplicationRegistry.remove();
         }
     }
 
@@ -186,7 +166,7 @@ public class RMIPasswordAuthenticatorTest extends TestCase
             assertEquals("Unexpected exception message",
                     RMIPasswordAuthenticator.SHOULD_HAVE_2_ELEMENTS, se.getMessage());
         }
-        
+
         // Test handling of null credentials
         try
         {
@@ -200,7 +180,7 @@ public class RMIPasswordAuthenticatorTest extends TestCase
             assertEquals("Unexpected exception message",
                     RMIPasswordAuthenticator.CREDENTIALS_REQUIRED, se.getMessage());
         }
-        
+
         try
         {
             //send a null password
@@ -213,7 +193,7 @@ public class RMIPasswordAuthenticatorTest extends TestCase
             assertEquals("Unexpected exception message",
                     RMIPasswordAuthenticator.SHOULD_BE_NON_NULL, se.getMessage());
         }
-        
+
         try
         {
             //send a null username
@@ -252,7 +232,7 @@ public class RMIPasswordAuthenticatorTest extends TestCase
                 throw new UnsupportedOperationException();
             }
 
-            public SaslServer createSaslServer(String mechanism, String localFQDN) throws SaslException
+            public SaslServer createSaslServer(String mechanism, String localFQDN, Principal externalPrincipal) throws SaslException
             {
                 throw new UnsupportedOperationException();
             }
@@ -277,10 +257,6 @@ public class RMIPasswordAuthenticatorTest extends TestCase
                 }
             }
 
-            public CallbackHandler getHandler(String mechanism)
-            {
-                return null;
-            }
         };
     }
 }

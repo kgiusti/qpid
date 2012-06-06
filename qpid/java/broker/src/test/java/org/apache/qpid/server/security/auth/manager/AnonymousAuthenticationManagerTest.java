@@ -79,13 +79,13 @@ public class AnonymousAuthenticationManagerTest extends InternalBrokerBaseCase
 
     public void testCreateSaslServer() throws Exception
     {
-        SaslServer server = _manager.createSaslServer("ANONYMOUS", "example.example.com");
+        SaslServer server = _manager.createSaslServer("ANONYMOUS", "example.example.com", null);
 
         assertEquals("Sasl Server mechanism name is not as expected", "ANONYMOUS", server.getMechanismName());
 
         try
         {
-            server = _manager.createSaslServer("PLAIN", "example.example.com");
+            server = _manager.createSaslServer("PLAIN", "example.example.com", null);
             fail("Expected creating SaslServer with incorrect mechanism to throw an exception");
         }
         catch (SaslException e)
@@ -96,7 +96,7 @@ public class AnonymousAuthenticationManagerTest extends InternalBrokerBaseCase
 
     public void testAuthenticate() throws Exception
     {
-        SaslServer saslServer = _manager.createSaslServer("ANONYMOUS", "example.example.com");
+        SaslServer saslServer = _manager.createSaslServer("ANONYMOUS", "example.example.com", null);
         AuthenticationResult result = _manager.authenticate(saslServer, new byte[0]);
         assertNotNull(result);
         assertEquals("Expected authentication to be successful",
