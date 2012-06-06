@@ -40,13 +40,16 @@ size_t MessageDeque::index(const framing::SequenceNumber& position)
 bool MessageDeque::deleted(const QueuedMessage& m)
 {
     size_t i = index(m.position);
-    if (i < messages.size() && messages[i].status != QueuedMessage::DELETED) {
-        messages[i].status = QueuedMessage::DELETED;
-        clean();
-        return true;
-    } else {
-        return false;
+    if (i < messages.size()) {
+        QueuedMessage *qm = &messages[i];
+        if (qm->status != QueuedMessage::DELETED) {
+            qm->status = QueuedMessage::DELETED;
+            qm->payload.reset();    // release the message
+            clean();
+            return true;
+        }
     }
+    return false;
 }
 
 size_t MessageDeque::size()
@@ -195,10 +198,16 @@ void MessageDeque::setPosition(const framing::SequenceNumber& n) {
 
 void MessageDeque::clean()
 {
-    while (messages.size() && messages.front().status == QueuedMessage::DELETED) {
-        messages.pop_front();
-        if (head) --head;
+    size_t count = 0;
+    Deque::iterator i = messages.begin();
+    // 100 == artificial limit to keep from freeing too many entries while the
+    // Queue's messagelock is held.
+    while (i != messages.end() && i->status == QueuedMessage::DELETED && count < 100) {
+        ++i;
+        count += 1;
     }
+    messages.erase(messages.begin(), i);
+    head = (head > count) ? head - count : 0;
 }
 
 void MessageDeque::foreach(Functor f)
