@@ -1,0 +1,38 @@
+# Note well:
+# First, change the pathname in the probe's process() line below to point to your qpidd binaries.
+# Second, run qpidd via stap as root, passing this script. Example:
+#   sudo stap ./qLock.stp -c "/home/kgiusti/Desktop/work/qpid/github/build/x-qlock-probes/src/qpidd --auth no --worker-threads=3 -p 8888"
+# (you'll have to wait a bit for qpidd to start - watch for the normal log messages)
+# Third, run tests against qpidd.
+# Forth, ^C the stap command, the results should be printed on exit.
+#
+
+global lockTime
+
+probe
+
+    process("/home/kgiusti/Desktop/work/qpid/github/build/x-qlock-probes/src/.libs/*").mark("queue_lock_duration*")
+{
+    lockTime[$arg1] <<< $arg2
+}
+
+
+
+probe
+    end,
+    error
+{
+    printf("QUEUE LOCK DURATION\n")
+    foreach(lno in lockTime) {
+      printf("Message Q lock stats for Queue.cpp line# %d:\n", lno)
+      print("Duration histogram (nsecs held v. count)\n")
+      print(@hist_log(lockTime[lno]))
+      printf(" count=%d min=%d max=%d avg=%d\n\n\n",
+             @count(lockTime[lno]),
+             @min(lockTime[lno]),
+             @max(lockTime[lno]),
+             @avg(lockTime[lno]))
+   }
+}
+
+

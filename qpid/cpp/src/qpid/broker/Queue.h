@@ -124,6 +124,17 @@ class Queue : public boost::enable_shared_from_this<Queue>,
      *     o  consumerCount  (TBD: move under separate lock)
      *     o  Queue::UsageBarrier (TBD: move under separate lock)
      */
+
+    class ProbedLock {
+  private:
+        qpid::sys::Monitor& lock;
+        qpid::sys::AbsTime taken;
+        const unsigned int line;
+  public:
+        ProbedLock(qpid::sys::Monitor& l, const unsigned int line);
+        ~ProbedLock();
+    };
+
     mutable qpid::sys::Monitor messageLock;
     mutable qpid::sys::Mutex ownershipLock;
     mutable uint64_t persistenceId;
@@ -161,12 +172,12 @@ class Queue : public boost::enable_shared_from_this<Queue>,
 
     /** update queue observers, stats, policy, etc when the messages' state changes.
      * messageLock is held by caller */
-    void observeEnqueue(const QueuedMessage& msg, const sys::Mutex::ScopedLock& lock);
-    void observeAcquire(const QueuedMessage& msg, const sys::Mutex::ScopedLock& lock);
-    void observeRequeue(const QueuedMessage& msg, const sys::Mutex::ScopedLock& lock);
-    void observeDequeue(const QueuedMessage& msg, const sys::Mutex::ScopedLock& lock);
-    void observeConsumerAdd( const Consumer&, const sys::Mutex::ScopedLock& lock);
-    void observeConsumerRemove( const Consumer&, const sys::Mutex::ScopedLock& lock);
+    void observeEnqueue(const QueuedMessage& msg, const ProbedLock& lock);
+    void observeAcquire(const QueuedMessage& msg, const ProbedLock& lock);
+    void observeRequeue(const QueuedMessage& msg, const ProbedLock& lock);
+    void observeDequeue(const QueuedMessage& msg, const ProbedLock& lock);
+    void observeConsumerAdd( const Consumer&, const ProbedLock& lock);
+    void observeConsumerRemove( const Consumer&, const ProbedLock& lock);
 
     bool popAndDequeue(QueuedMessage&);
     bool acquire(const qpid::framing::SequenceNumber& position, QueuedMessage& msg);
@@ -361,7 +372,7 @@ class Queue : public boost::enable_shared_from_this<Queue>,
 
     /** Apply f to each Message on the queue. */
     template <class F> void eachMessage(F f) {
-        sys::Mutex::ScopedLock l(messageLock);
+        ProbedLock l(messageLock, __LINE__);
         messages->foreach(f);
     }
 
@@ -372,7 +383,7 @@ class Queue : public boost::enable_shared_from_this<Queue>,
 
     /** Apply f to each Observer on the queue */
     template <class F> void eachObserver(F f) {
-        sys::Mutex::ScopedLock l(messageLock);
+        ProbedLock l(messageLock, __LINE__);
         std::for_each<Observers::iterator, F>(observers.begin(), observers.end(), f);
     }
 

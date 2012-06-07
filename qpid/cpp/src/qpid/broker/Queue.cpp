@@ -46,6 +46,7 @@
 #include "qpid/sys/ClusterSafe.h"
 #include "qpid/sys/Monitor.h"
 #include "qpid/sys/Time.h"
+#include "qpid/sys/Probes.h"
 #include "qpid/types/Variant.h"
 #include "qmf/org/apache/qpid/broker/ArgsQueuePurge.h"
 #include "qmf/org/apache/qpid/broker/ArgsQueueReroute.h"
@@ -144,6 +145,22 @@ inline void mgntDeqStats(const boost::intrusive_ptr<Message>& msg,
 
 } // namespace
 
+
+    Queue::ProbedLock::ProbedLock(qpid::sys::Monitor& _lock, const unsigned int _line)
+        : lock(_lock), line(_line)
+    {
+        lock.lock();
+        taken = qpid::sys::AbsTime::now();
+    }
+
+    Queue::ProbedLock::~ProbedLock()
+    {
+        int64_t duration = qpid::sys::Duration(taken, qpid::sys::AbsTime::now());
+        lock.unlock();
+        QPID_PROBE2(queue_lock_duration, line, duration);
+    }
+
+
 Queue::Queue(const string& _name, bool _autodelete,
              MessageStore* const _store,
              const OwnershipToken* const _owner,
@@ -238,14 +255,14 @@ void Queue::deliver(boost::intrusive_ptr<Message> msg){
 
 void Queue::recoverPrepared(boost::intrusive_ptr<Message>& msg)
 {
-    Mutex::ScopedLock locker(messageLock);
+    ProbedLock locker(messageLock, __LINE__);
     if (policy.get()) policy->recoverEnqueued(msg);
 }
 
 void Queue::recover(boost::intrusive_ptr<Message>& msg)
 {
     {
-        Mutex::ScopedLock locker(messageLock);
+        ProbedLock locker(messageLock, __LINE__);
         if (policy.get()) policy->recoverEnqueued(msg);
     }
 
@@ -305,7 +322,7 @@ void Queue::requeue(const QueuedMessage& msg){
             mgntDeqStats(msg.payload, mgmtObject, brokerMgmtObject);
         } else {
             {
-                Mutex::ScopedLock locker(messageLock);
+                ProbedLock locker(messageLock, __LINE__);
                 messages->release(msg);
                 observeRequeue(msg, locker);
                 listeners.populate(copy);
@@ -349,7 +366,7 @@ bool Queue::acquire(const QueuedMessage& msg, const std::string& consumer)
     QPID_LOG(debug, consumer << " attempting to acquire message at " << msg.position);
     bool ok;
     {
-        Mutex::ScopedLock locker(messageLock);
+        ProbedLock locker(messageLock, __LINE__);
         ok = allocator->allocate( consumer, msg );
     }
     if (!ok) {
@@ -371,7 +388,7 @@ void Queue::notifyListener()
     assertClusterSafe();
     QueueListeners::NotificationSet set;
     {
-        Mutex::ScopedLock locker(messageLock);
+        ProbedLock locker(messageLock, __LINE__);
         if (messages->size()) {
             listeners.populate(set);
         }
@@ -403,7 +420,7 @@ Queue::ConsumeCode Queue::consumeNextMessage(QueuedMessage& m, Consumer::shared_
         QueuedMessage msg;
         bool found;
         {
-            Mutex::ScopedLock locker(messageLock);
+            ProbedLock locker(messageLock, __LINE__);
             found = allocator->nextConsumableMessage(c, msg);
             if (!found) listeners.addListener(c);
         }
@@ -427,7 +444,7 @@ Queue::ConsumeCode Queue::consumeNextMessage(QueuedMessage& m, Consumer::shared_
         if (c->filter(msg.payload)) {
             if (c->accept(msg.payload)) {
                 {
-                    Mutex::ScopedLock locker(messageLock);
+                    ProbedLock locker(messageLock, __LINE__);
                     bool ok = allocator->allocate( c->getName(), msg );  // inform allocator
                     (void) ok; assert(ok);
                     observeAcquire(msg, locker);
@@ -448,7 +465,7 @@ Queue::ConsumeCode Queue::consumeNextMessage(QueuedMessage& m, Consumer::shared_
             QPID_LOG(debug, "Consumer doesn't want message from '" << name << "'");
         }
 
-        Mutex::ScopedLock locker(messageLock);
+        ProbedLock locker(messageLock, __LINE__);
         messages->release(msg);
         return CANT_CONSUME;
     }
@@ -460,7 +477,7 @@ bool Queue::browseNextMessage(QueuedMessage& m, Consumer::shared_ptr& c)
         QueuedMessage msg;
         bool found;
         {
-            Mutex::ScopedLock locker(messageLock);
+            ProbedLock locker(messageLock, __LINE__);
             found = allocator->nextBrowsableMessage(c, msg);
             if (!found) listeners.addListener(c);
         }
@@ -494,7 +511,7 @@ void Queue::removeListener(Consumer::shared_ptr c)
 {
     QueueListeners::NotificationSet set;
     {
-        Mutex::ScopedLock locker(messageLock);
+        ProbedLock locker(messageLock, __LINE__);
         listeners.removeListener(c);
         if (messages->size()) {
             listeners.populate(set);
@@ -515,7 +532,7 @@ bool Queue::dispatch(Consumer::shared_ptr c)
 }
 
 bool Queue::find(SequenceNumber pos, QueuedMessage& msg) const {
-    Mutex::ScopedLock locker(messageLock);
+    ProbedLock locker(messageLock, __LINE__);
     if (messages->find(pos, msg))
         return true;
     return false;
@@ -524,7 +541,7 @@ bool Queue::find(SequenceNumber pos, QueuedMessage& msg) const {
 void Queue::consume(Consumer::shared_ptr c, bool requestExclusive){
     assertClusterSafe();
     {
-        Mutex::ScopedLock locker(messageLock);
+        ProbedLock locker(messageLock, __LINE__);
         // NOTE: consumerCount is actually a count of all
         // subscriptions, both acquiring and non-acquiring (browsers).
         // Check for exclusivity of acquiring consumers.
@@ -560,7 +577,7 @@ void Queue::consume(Consumer::shared_ptr c, bool requestExclusive){
 void Queue::cancel(Consumer::shared_ptr c){
     removeListener(c);
     {
-        Mutex::ScopedLock locker(messageLock);
+        ProbedLock locker(messageLock, __LINE__);
         consumerCount--;
         if (!c->preAcquires()) browserCount--;
         if(exclusive) exclusive = 0;
@@ -574,7 +591,7 @@ QueuedMessage Queue::get(){
     QueuedMessage msg(this);
     bool ok;
     {
-        Mutex::ScopedLock locker(messageLock);
+        ProbedLock locker(messageLock, __LINE__);
         ok = messages->consume(msg);
         if (ok) observeAcquire(msg, locker);
     }
@@ -607,7 +624,7 @@ void Queue::dequeueIf(Messages::Predicate predicate,
                       std::deque<QueuedMessage>& dequeued)
 {
     {
-        Mutex::ScopedLock locker(messageLock);
+        ProbedLock locker(messageLock, __LINE__);
         messages->removeIf(boost::bind(&collectIf, _1, predicate, boost::ref(dequeued)));
     }
     if (!dequeued.empty()) {
@@ -621,7 +638,7 @@ void Queue::dequeueIf(Messages::Predicate predicate,
             {
                 // KAG: should be safe to retake lock after the removeIf, since
                 // no other thread can touch these messages after the removeIf() call
-                Mutex::ScopedLock locker(messageLock);
+                ProbedLock locker(messageLock, __LINE__);
                 observeAcquire(*i, locker);
             }
             dequeue( 0, *i );
@@ -773,7 +790,7 @@ uint32_t Queue::purge(const uint32_t purge_request, boost::shared_ptr<Exchange> 
     Collector c(*mf.get(), purge_request);
 
     {
-        Mutex::ScopedLock locker(messageLock);
+        ProbedLock locker(messageLock, __LINE__);
         messages->removeIf( boost::bind<bool>(boost::ref(c), _1) );
     }
 
@@ -801,7 +818,7 @@ uint32_t Queue::purge(const uint32_t purge_request, boost::shared_ptr<Exchange> 
             {
                 // KAG: should be safe to retake lock after the removeIf, since
                 // no other thread can touch these messages after the removeIf call
-                Mutex::ScopedLock locker(messageLock);
+                ProbedLock locker(messageLock, __LINE__);
                 observeAcquire(*qmsg, locker);
             }
             dequeue(0, *qmsg);
@@ -824,7 +841,7 @@ uint32_t Queue::move(const Queue::shared_ptr destq, uint32_t qty,
     Collector c(*mf.get(), qty);
 
     {
-        Mutex::ScopedLock locker(messageLock);
+        ProbedLock locker(messageLock, __LINE__);
         messages->removeIf( boost::bind<bool>(boost::ref(c), _1) );
     }
 
@@ -841,7 +858,7 @@ uint32_t Queue::move(const Queue::shared_ptr destq, uint32_t qty,
         for (std::deque<QueuedMessage>::iterator qmsg = c.matches.begin();
              qmsg != c.matches.end(); ++qmsg) {
             {
-                Mutex::ScopedLock locker(messageLock);
+                ProbedLock locker(messageLock, __LINE__);
                 observeAcquire(*qmsg, locker);
             }
             dequeue(0, *qmsg);
@@ -858,7 +875,7 @@ bool Queue::acquire(const qpid::framing::SequenceNumber& position, QueuedMessage
 {
     bool ok;
     {
-        Mutex::ScopedLock locker(messageLock);
+        ProbedLock locker(messageLock, __LINE__);
         ok = messages->acquire(position, msg);
         if (ok) observeAcquire(msg, locker);
     }
@@ -880,7 +897,7 @@ void Queue::push(boost::intrusive_ptr<Message>& msg, bool isRecovery){
     QueuedMessage removed, qm(this, msg);
     bool dequeueRequired = false;
     {
-        Mutex::ScopedLock locker(messageLock);
+        ProbedLock locker(messageLock, __LINE__);
         qm.position = ++sequence;
         if (messages->push(qm, removed)) {
             dequeueRequired = true;
@@ -908,7 +925,7 @@ void Queue::push(boost::intrusive_ptr<Message>& msg, bool isRecovery){
         if (isRecovery) {
             //can't issue new requests for the store until
             //recovery is complete
-            Mutex::ScopedLock locker(messageLock);
+            ProbedLock locker(messageLock, __LINE__);
             pendingDequeues.push_back(removed);
         } else {
             dequeue(0, removed);
@@ -926,26 +943,26 @@ void isEnqueueComplete(uint32_t* result, const QueuedMessage& message)
 uint32_t Queue::getEnqueueCompleteMessageCount() const
 {
     uint32_t count = 0;
-    Mutex::ScopedLock locker(messageLock);
+    ProbedLock locker(messageLock, __LINE__);
     messages->foreach(boost::bind(&isEnqueueComplete, &count, _1));
     return count;
 }
 
 uint32_t Queue::getMessageCount() const
 {
-    Mutex::ScopedLock locker(messageLock);
+    ProbedLock locker(messageLock, __LINE__);
     return messages->size();
 }
 
 uint32_t Queue::getConsumerCount() const
 {
-    Mutex::ScopedLock locker(messageLock);
+    ProbedLock locker(messageLock, __LINE__);
     return consumerCount;
 }
 
 bool Queue::canAutoDelete() const
 {
-    Mutex::ScopedLock locker(messageLock);
+    ProbedLock locker(messageLock, __LINE__);
     return autodelete && !consumerCount && !owner;
 }
 
@@ -967,7 +984,7 @@ void Queue::forcePersistent(QueuedMessage& message)
 void Queue::setLastNodeFailure()
 {
     if (persistLastNode){
-        Mutex::ScopedLock locker(messageLock);
+        ProbedLock locker(messageLock, __LINE__);
         try {
             messages->foreach(boost::bind(&Queue::forcePersistent, this, _1));
         } catch (const std::exception& e) {
@@ -988,7 +1005,7 @@ bool Queue::enqueue(TransactionContext* ctxt, boost::intrusive_ptr<Message>& msg
     if (policy.get() && !suppressPolicyCheck) {
         std::deque<QueuedMessage> dequeues;
         {
-            Mutex::ScopedLock locker(messageLock);
+            ProbedLock locker(messageLock, __LINE__);
             try {
                 policy->tryEnqueue(msg);
             } catch(ResourceLimitExceededException&) {
@@ -1043,7 +1060,7 @@ bool Queue::enqueue(TransactionContext* ctxt, boost::intrusive_ptr<Message>& msg
 
 void Queue::enqueueAborted(boost::intrusive_ptr<Message> msg)
 {
-    Mutex::ScopedLock locker(messageLock);
+    ProbedLock locker(messageLock, __LINE__);
     if (policy.get()) policy->enqueueAborted(msg);
 }
 
@@ -1053,7 +1070,7 @@ bool Queue::dequeue(TransactionContext* ctxt, const QueuedMessage& msg)
     ScopedUse u(barrier);
     if (!u.acquired) return false;
     {
-        Mutex::ScopedLock locker(messageLock);
+        ProbedLock locker(messageLock, __LINE__);
         if (!isEnqueued(msg)) return false;
         if (!ctxt) {
             if (policy.get()) policy->dequeued(msg);
@@ -1083,7 +1100,7 @@ bool Queue::dequeue(TransactionContext* ctxt, const QueuedMessage& msg)
 void Queue::dequeueCommitted(const QueuedMessage& msg)
 {
     {
-        Mutex::ScopedLock locker(messageLock);
+        ProbedLock locker(messageLock, __LINE__);
         if (policy.get()) policy->dequeued(msg);
         messages->deleted(msg);
         observeDequeue(msg, locker);
@@ -1112,7 +1129,7 @@ bool Queue::popAndDequeue(QueuedMessage& msg)
 {
     bool popped;
     {
-        Mutex::ScopedLock locker(messageLock);
+        ProbedLock locker(messageLock, __LINE__);
         popped = messages->consume(msg);
         if (popped) observeAcquire(msg, locker);
     }
@@ -1131,9 +1148,9 @@ bool Queue::popAndDequeue(QueuedMessage& msg)
 
 /**
  * Updates policy and management when a message has been dequeued,
- * Requires messageLock be held by caller.
+ * messageLock be held by caller.
  */
-void Queue::observeDequeue(const QueuedMessage& msg, const qpid::sys::Mutex::ScopedLock&)
+void Queue::observeDequeue(const QueuedMessage& msg, const ProbedLock&)
 {
     for (Observers::const_iterator i = observers.begin(); i != observers.end(); ++i) {
         try{
@@ -1147,7 +1164,7 @@ void Queue::observeDequeue(const QueuedMessage& msg, const qpid::sys::Mutex::Sco
 /** updates queue observers when a message has become unavailable for transfer.
  * Requires messageLock be held by caller.
  */
-void Queue::observeAcquire(const QueuedMessage& msg, const qpid::sys::Mutex::ScopedLock&)
+void Queue::observeAcquire(const QueuedMessage& msg, const ProbedLock&)
 {
     for (Observers::const_iterator i = observers.begin(); i != observers.end(); ++i) {
         try{
@@ -1161,7 +1178,7 @@ void Queue::observeAcquire(const QueuedMessage& msg, const qpid::sys::Mutex::Sco
 /** updates queue observers when a message has become re-available for transfer
  *  Requires messageLock be held by caller.
  */
-void Queue::observeRequeue(const QueuedMessage& msg, const qpid::sys::Mutex::ScopedLock&)
+void Queue::observeRequeue(const QueuedMessage& msg, const ProbedLock&)
 {
     for (Observers::const_iterator i = observers.begin(); i != observers.end(); ++i) {
         try{
@@ -1174,7 +1191,7 @@ void Queue::observeRequeue(const QueuedMessage& msg, const qpid::sys::Mutex::Sco
 
 /** updates queue observers when a new consumer has subscribed to this queue.
  */
-void Queue::observeConsumerAdd( const Consumer& c, const qpid::sys::Mutex::ScopedLock&)
+void Queue::observeConsumerAdd( const Consumer& c, const ProbedLock&)
 {
     for (Observers::const_iterator i = observers.begin(); i != observers.end(); ++i) {
         try{
@@ -1187,7 +1204,7 @@ void Queue::observeConsumerAdd( const Consumer& c, const qpid::sys::Mutex::Scope
 
 /** updates queue observers when a consumer has unsubscribed from this queue.
  */
-void Queue::observeConsumerRemove( const Consumer& c, const qpid::sys::Mutex::ScopedLock&)
+void Queue::observeConsumerRemove( const Consumer& c, const ProbedLock&)
 {
     for (Observers::const_iterator i = observers.begin(); i != observers.end(); ++i) {
         try{
@@ -1371,7 +1388,7 @@ void Queue::destroyed()
     if (autoDeleteTask) autoDeleteTask = boost::intrusive_ptr<TimerTask>();
     notifyDeleted();
     {
-        Mutex::ScopedLock lock(messageLock);
+        ProbedLock lock(messageLock, __LINE__);
         observers.clear();
     }
 }
@@ -1380,7 +1397,7 @@ void Queue::notifyDeleted()
 {
     QueueListeners::ListenerSet set;
     {
-        Mutex::ScopedLock locker(messageLock);
+        ProbedLock locker(messageLock, __LINE__);
         deleted = true;
         listeners.snapshot(set);
     }
@@ -1400,7 +1417,7 @@ void Queue::unbind(ExchangeRegistry& exchanges)
 
 void Queue::setPolicy(std::auto_ptr<QueuePolicy> _policy)
 {
-    Mutex::ScopedLock locker(messageLock);
+    ProbedLock locker(messageLock, __LINE__);
     policy = _policy;
     if (policy.get())
         policy->setQueue(this);
@@ -1408,7 +1425,7 @@ void Queue::setPolicy(std::auto_ptr<QueuePolicy> _policy)
 
 const QueuePolicy* Queue::getPolicy()
 {
-    Mutex::ScopedLock locker(messageLock);
+    ProbedLock locker(messageLock, __LINE__);
     return policy.get();
 }
 
@@ -1667,7 +1684,7 @@ Manageable::status_t Queue::ManagementMethod (uint32_t methodId, Args& args, str
 
 void Queue::query(qpid::types::Variant::Map& results) const
 {
-    Mutex::ScopedLock locker(messageLock);
+    ProbedLock locker(messageLock, __LINE__);
     /** @todo add any interesting queue state into results */
     if (allocator) allocator->query(results);
 }
@@ -1682,7 +1699,7 @@ struct After {
 
 
 void Queue::setPosition(SequenceNumber n) {
-    Mutex::ScopedLock locker(messageLock);
+    ProbedLock locker(messageLock, __LINE__);
     if (n < sequence) {
         std::deque<QueuedMessage> dequeued;
         dequeueIf(After(n), dequeued);
@@ -1711,7 +1728,7 @@ void Queue::recoveryComplete(ExchangeRegistry& exchanges)
     //process any pending dequeues
     std::deque<QueuedMessage> pd;
     {
-        Mutex::ScopedLock locker(messageLock);
+        ProbedLock locker(messageLock, __LINE__);
         pendingDequeues.swap(pd);
     }
     for_each(pd.begin(), pd.end(), boost::bind(&Queue::dequeue, this, (TransactionContext*) 0, _1));
@@ -1727,7 +1744,7 @@ void Queue::insertSequenceNumbers(const std::string& key)
 /** updates queue observers and state when a message has become available for transfer
  *  Requires messageLock be held by caller.
  */
-void Queue::observeEnqueue(const QueuedMessage& m, const qpid::sys::Mutex::ScopedLock&)
+void Queue::observeEnqueue(const QueuedMessage& m, const ProbedLock&)
 {
     for (Observers::iterator i = observers.begin(); i != observers.end(); ++i) {
         try {
@@ -1744,7 +1761,7 @@ void Queue::updateEnqueued(const QueuedMessage& m)
         boost::intrusive_ptr<Message> payload = m.payload;
         enqueue(0, payload, true);
         {
-            Mutex::ScopedLock locker(messageLock);
+            ProbedLock locker(messageLock, __LINE__);
             messages->updateAcquired(m);
             observeEnqueue(m, locker);
             if (policy.get()) {
@@ -1760,7 +1777,7 @@ void Queue::updateEnqueued(const QueuedMessage& m)
 
 bool Queue::isEnqueued(const QueuedMessage& msg)
 {
-    Mutex::ScopedLock locker(messageLock);
+    ProbedLock locker(messageLock, __LINE__);
     return !policy.get() || policy->isEnqueued(msg);
 }
 
@@ -1782,13 +1799,13 @@ void Queue::checkNotDeleted(const Consumer::shared_ptr& c)
 
 void Queue::addObserver(boost::shared_ptr<QueueObserver> observer)
 {
-    Mutex::ScopedLock lock(messageLock);
+    ProbedLock lock(messageLock, __LINE__);
     observers.insert(observer);
 }
 
 void Queue::removeObserver(boost::shared_ptr<QueueObserver> observer)
 {
-    Mutex::ScopedLock lock(messageLock);
+    ProbedLock lock(messageLock, __LINE__);
     observers.erase(observer);
 }
 
@@ -1851,7 +1868,7 @@ Queue::UsageBarrier::UsageBarrier(Queue& q) : parent(q), count(0) {}
 
 bool Queue::UsageBarrier::acquire()
 {
-    Monitor::ScopedLock l(parent.messageLock);  /** @todo: use a dedicated lock instead of messageLock */
+    ProbedLock l(parent.messageLock, __LINE__);  /** @todo: use a dedicated lock instead of messageLock */
     if (parent.deleted) {
         return false;
     } else {
@@ -1862,13 +1879,13 @@ bool Queue::UsageBarrier::acquire()
 
 void Queue::UsageBarrier::release()
 {
-    Monitor::ScopedLock l(parent.messageLock);
+    ProbedLock l(parent.messageLock, __LINE__);
     if (--count == 0) parent.messageLock.notifyAll();
 }
 
 void Queue::UsageBarrier::destroy()
 {
-    Monitor::ScopedLock l(parent.messageLock);
+    ProbedLock l(parent.messageLock, __LINE__);
     parent.deleted = true;
     while (count) parent.messageLock.wait();
 }
