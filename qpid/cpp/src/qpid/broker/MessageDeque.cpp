@@ -44,7 +44,7 @@ bool MessageDeque::deleted(const QueuedMessage& m)
         QueuedMessage *qm = &messages[i];
         if (qm->status != QueuedMessage::DELETED) {
             qm->status = QueuedMessage::DELETED;
-            qm->payload.reset();    // release the message
+            qm->payload.reset(); // message no longer needed
             clean();
             return true;
         }
@@ -147,6 +147,7 @@ QueuedMessage* MessageDeque::pushPtr(const QueuedMessage& added) {
     messages.back().status = QueuedMessage::AVAILABLE;
     if (head >= messages.size()) head = messages.size() - 1;
     ++available;
+    clean();  // QPID-4046: let producer help clean the backlog of deleted messages
     return &messages.back();
 }
 
@@ -198,15 +199,14 @@ void MessageDeque::setPosition(const framing::SequenceNumber& n) {
 
 void MessageDeque::clean()
 {
+    // QPID-4046: If a queue has multiple consumers, then it is possible for a large
+    // collection of deleted messages to build up.  Limit the number of messages cleaned
+    // up on each call to clean().
     size_t count = 0;
-    Deque::iterator i = messages.begin();
-    // 100 == artificial limit to keep from freeing too many entries while the
-    // Queue's messagelock is held.
-    while (i != messages.end() && i->status == QueuedMessage::DELETED && count < 100) {
-        ++i;
+    while (messages.size() && messages.front().status == QueuedMessage::DELETED && count < 10) {
+        messages.pop_front();
         count += 1;
     }
-    messages.erase(messages.begin(), i);
     head = (head > count) ? head - count : 0;
 }
 
