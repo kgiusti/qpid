@@ -139,9 +139,9 @@ void Bridge::create(Connection& c)
         }
 
         bool durable = false;//should this be an arg, or would we use srcIsQueue for durable queues?
-        bool autoDelete = !durable;//auto delete transient queues?
-        if (!useExistingQueue)
-            peer->getQueue().declare(queueName, "", false, durable, true, autoDelete, queueSettings);
+        bool exclusive = !useExistingQueue;  // only exclusive if the queue is owned by the bridge
+        bool autoDelete = exclusive && !durable;//auto delete transient queues?
+        peer->getQueue().declare(queueName, "", false, durable, exclusive, autoDelete, queueSettings);
         if (!args.i_dynamic)
             peer->getExchange().bind(queueName, args.i_src, args.i_key, FieldTable());
         peer->getMessage().subscribe(queueName, args.i_dest, 1, 0, false, "", 0, FieldTable());
