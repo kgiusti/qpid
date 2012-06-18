@@ -809,6 +809,7 @@ uint32_t Queue::purge(const uint32_t purge_request, boost::shared_ptr<Exchange> 
             // now reroute if necessary
             if (dest.get()) {
                 assert(qmsg->payload);
+                qmsg->payload->clearTrace();
                 DeliverableMessage dmsg(qmsg->payload);
                 dest->routeWithAlternate(dmsg);
             }
@@ -1693,6 +1694,7 @@ void Queue::setPosition(SequenceNumber n) {
 }
 
 SequenceNumber Queue::getPosition() {
+    Mutex::ScopedLock locker(messageLock);
     return sequence;
 }
 

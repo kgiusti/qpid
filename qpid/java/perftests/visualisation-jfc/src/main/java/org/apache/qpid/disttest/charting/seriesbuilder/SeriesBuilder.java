@@ -1,5 +1,4 @@
 /*
- *
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,33 +17,16 @@
  * under the License.
  *
  */
-#include "LogPrefix.h"
-#include "HaBroker.h"
-#include <iostream>
+package org.apache.qpid.disttest.charting.seriesbuilder;
 
-namespace qpid {
-namespace ha {
+import java.util.List;
 
-LogPrefix::LogPrefix(HaBroker& hb, const std::string& msg) : haBroker(&hb), status(0) {
-    if (msg.size()) setMessage(msg);
-}
+import org.apache.qpid.disttest.charting.definition.SeriesDefinition;
 
-LogPrefix::LogPrefix(LogPrefix& lp, const std::string& msg)
-  : haBroker(lp.haBroker), status(0)
+public interface SeriesBuilder
 {
-    if (msg.size()) setMessage(msg);
+    void build(List<SeriesDefinition> seriesDefinitions);
+
+    void setSeriesBuilderCallback(SeriesBuilderCallback seriesBuilderCallback);
+
 }
-
-LogPrefix::LogPrefix(BrokerStatus& s) : haBroker(0), status(&s) {}
-
-void LogPrefix::setMessage(const std::string& msg) {
-    tail = " "+msg+":";
-}
-
-std::ostream& operator<<(std::ostream& o, const LogPrefix& l) {
-    return o << "HA("
-             << printable(l.status ? *l.status : l.haBroker->getStatus())
-             << ")" << l.tail << " ";
-}
-
-}} // namespace qpid::ha

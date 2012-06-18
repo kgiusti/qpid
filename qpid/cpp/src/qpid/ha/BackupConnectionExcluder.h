@@ -1,5 +1,5 @@
-#ifndef QPID_HA_CONNECTIONEXCLUDER_H
-#define QPID_HA_CONNECTIONEXCLUDER_H
+#ifndef QPID_HA_BACKUPCONNECTIONEXCLUDER_H
+#define QPID_HA_BACKUPCONNECTIONEXCLUDER_H
 
 /*
  *
@@ -22,43 +22,29 @@
  *
  */
 
-#include "LogPrefix.h"
 #include "qpid/broker/ConnectionObserver.h"
-#include "qpid/framing/Uuid.h"
-#include <boost/function.hpp>
+#include "qpid/broker/Connection.h"
+#include "qpid/log/Statement.h"
 
 namespace qpid {
-
-namespace broker {
-class Connection;
-}
-
 namespace ha {
+// FIXME aconway 2012-06-06: move to Backup.cpp
 
 /**
- * Exclude normal connections to a backup broker.
- * Admin connections are identified by a special flag in client-properties
- * during connection negotiation.
+ * Exclude connections to a backup broker.
  */
-class ConnectionExcluder : public broker::ConnectionObserver
+class BackupConnectionExcluder : public broker::ConnectionObserver
 {
   public:
-    static const std::string ADMIN_TAG;
-    static const std::string BACKUP_TAG;
+    void opened(broker::Connection& connection) {
+        // FIXME aconway 2012-06-13: suppress caught error message, make this an info message.
+        QPID_LOG(error, "Backup broker rejected connection "+connection.getMgmtId());
+        throw Exception("Backup broker rejected connection "+connection.getMgmtId());
+    }
 
-    ConnectionExcluder(const LogPrefix&, const framing::Uuid& self);
-
-    void opened(broker::Connection& connection);
-
-    void setBackupAllowed(bool set) { backupAllowed = set; }
-    bool isBackupAllowed() const { return backupAllowed; }
-
-  private:
-    LogPrefix logPrefix;
-    bool backupAllowed;
-    framing::Uuid self;
+    void closed(broker::Connection&) {}
 };
 
 }} // namespace qpid::ha
 
-#endif  /*!QPID_HA_CONNECTIONEXCLUDER_H*/
+#endif  /*!QPID_HA_BACKUPCONNECTIONEXCLUDER_H*/

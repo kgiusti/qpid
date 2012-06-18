@@ -20,25 +20,30 @@
 
 import os, signal, sys, time, imp, re, subprocess, glob, random, logging, shutil, math
 import traceback
-from qpid.messaging import Message, NotFound, ConnectionError, ReceiverError, Connection
+from qpid.messaging import Message, NotFound, ConnectionError, ReceiverError, Connection, Timeout
 from qpid.datatypes import uuid4
 from brokertest import *
 from threading import Thread, Lock, Condition
-from logging import getLogger, WARN, ERROR, DEBUG
+from logging import getLogger, WARN, ERROR, DEBUG, INFO
 from qpidtoollibs import BrokerAgent
+from uuid import UUID
 
 log = getLogger(__name__)
 
-class QmfHaBroker(object):
+class QmfAgent(object):
+    """Access to a QMF broker agent."""
     def __init__(self, address):
-        self.connection = Connection.establish(
+        self._connection = Connection.establish(
             address, client_properties={"qpid.ha-admin":1})
-        self.qmf = BrokerAgent(self.connection)
-        self.ha_broker = self.qmf.getHaBroker()
-        if not self.ha_broker:
-            raise Exception("HA module is not loaded on broker at %s"%address)
+        self._agent = BrokerAgent(self._connection)
+        assert self._agent.getHaBroker(), "HA module not loaded in broker at: %s"%(address)
+
+    def __getattr__(self, name):
+        a = getattr(self._agent, name)
+        return a
 
 class HaBroker(Broker):
+    """Start a broker with HA enabled"""
     def __init__(self, test, args=[], brokers_url=None, ha_cluster=True,
                  ha_replicate="all", **kwargs):
         assert BrokerTest.ha_lib, "Cannot locate HA plug-in"
@@ -58,6 +63,9 @@ class HaBroker(Broker):
         assert os.path.exists(self.qpid_config_path)
         getLogger().setLevel(ERROR) # Hide expected WARNING log messages from failover.
         self.qpid_ha_script=import_script(self.qpid_ha_path)
+        self._agent = None
+
+    def __str__(self): return Broker.__str__(self)
 
     def qpid_ha(self, args): self.qpid_ha_script.main(["", "-b", self.host_port()]+args)
 
@@ -65,7 +73,14 @@ class HaBroker(Broker):
     def set_client_url(self, url): self.qpid_ha(["set", "--public-url", url])
     def set_brokers_url(self, url): self.qpid_ha(["set", "--brokers-url", url])
     def replicate(self, from_broker, queue): self.qpid_ha(["replicate", from_broker, queue])
-    def ha_status(self): QmfHaBroker(self.host_port()).ha_broker.status
+    def agent(self):
+        if not self._agent: self._agent = QmfAgent(self.host_port())
+        return self._agent
+
+    def ha_status(self): return self.agent().getHaBroker().status
+
+    def wait_status(self, status):
+        assert retry(lambda: self.ha_status() == status), "%s, %r != %r"%(self, self.ha_status(), status)
 
     # FIXME aconway 2012-05-01: do direct python call to qpid-config code.
     def qpid_config(self, args):
@@ -85,6 +100,14 @@ class HaBroker(Broker):
         """Wait for address to become valid on a backup broker."""
         bs = self.connect_admin().session()
         try: wait_address(bs, address)
+        finally: bs.connection.close()
+
+    def assert_browse(self, queue, expected, **kwargs):
+        """Verify queue contents by browsing."""
+        bs = self.connect().session()
+        try:
+            wait_address(bs, queue)
+            assert_browse_retry(bs, queue, expected, **kwargs)
         finally: bs.connection.close()
 
     def assert_browse_backup(self, queue, expected, **kwargs):
@@ -147,9 +170,11 @@ class HaCluster(object):
         if promote_next: self[(i+1) % len(self)].promote()
 
     def restart(self, i):
+        """Start a broker with the same name and data directory. It will get
+        a separate log file: foo.n.log"""
         b = self._brokers[i]
         self._brokers[i] = HaBroker(
-            self.test, name=self.next_name(), port=b.port(), brokers_url=self.url,
+            self.test, name=b.name, port=b.port(), brokers_url=self.url,
             **self.kwargs)
 
     def bounce(self, i, promote_next=True):
@@ -337,7 +362,8 @@ class ReplicationTests(BrokerTest):
         primary.kill()
         assert retry(lambda: not is_running(primary.pid))
         backup.promote()
-        self.assert_browse_retry(s, "q", ["foo"])
+        sender.send("bar")
+        self.assert_browse_retry(s, "q", ["foo", "bar"])
         c.close()
 
     def test_failover_cpp(self):
@@ -469,6 +495,8 @@ class ReplicationTests(BrokerTest):
             for i in range(10): s.send(Message(str(i)), sync=False)
         except qpid.messaging.exceptions.TargetCapacityExceeded: pass
         backup.assert_browse_backup("q", [str(i) for i in range(0,5)])
+        # Detach, don't close as there is a broken session
+        s.session.connection.detach()
 
     def test_priority(self):
         """Verify priority queues replicate correctly"""
@@ -620,26 +648,30 @@ class ReplicationTests(BrokerTest):
         assert valid_address(s, "ad")
         assert valid_address(s, "time")
 
-    def test_recovering(self):
-        """Verify that the primary broker does not go active until expected
-        backups have connected"""
-        cluster = HaCluster(self, 3, args=["--ha-expected-backups=2"])
-        c = cluster[0].connect()
-        for i in xrange(10):
-            s = c.session().sender("q%s;{create:always}"%i)
-            for j in xrange(100): s.send(str(j))
-        cluster.kill(0)         # Fail over to 1
-        cluster[1].assert_connect_fail() # Waiting for backups, won't accept clients.
-        cluster.restart(0)
-        c = retry(cluster[1].try_connect)
-        self.assertTrue(c)
-        cluster[1].assert_browse_backup("q0", [str(i) for i in xrange(100)]);
+    def test_broker_info(self):
+        """Check that broker information is correctly published via management"""
+        cluster = HaCluster(self, 3)
 
-        # Verify in logs that all queue catch-up happened before the transition to active.
-        log = open(cluster[1].log).read()
-        i = log.find("Status change: recovering -> active")
-        self.failIf(i < 0)
-        self.assertEqual(log.find("caught up", i), -1)
+        for broker in cluster:  # Make sure HA system-id matches broker's
+            qmf = broker.agent().getHaBroker()
+            self.assertEqual(qmf.systemId, UUID(broker.agent().getBroker().systemRef))
+
+        cluster_ports = map(lambda b: b.port(), cluster)
+        cluster_ports.sort()
+        def ports(qmf):
+            qmf.update()
+            return sorted(map(lambda b: b["port"], qmf.members))
+        # Check that all brokers have the same membership as the cluster
+        for broker in cluster:
+            qmf = broker.agent().getHaBroker()
+            assert retry(lambda: cluster_ports == ports(qmf), 1), "%s != %s on %s"%(cluster_ports, ports(qmf), broker)
+        # Add a new broker, check it is updated everywhere
+        b = cluster.start()
+        cluster_ports.append(b.port())
+        cluster_ports.sort()
+        for broker in cluster:
+            qmf = broker.agent().getHaBroker()
+            assert retry(lambda: cluster_ports == ports(qmf), 1), "%s != %s"%(cluster_ports, ports(qmf))
 
 def fairshare(msgs, limit, levels):
     """
@@ -685,49 +717,107 @@ class LongTests(BrokerTest):
 
     def test_failover_send_receive(self):
         """Test failover with continuous send-receive"""
-        # Start a cluster, all members will be killed during the test.
-        # FIXME aconway 2012-05-01: try expected-backups=1, requires catchup-ready fixed.
-        brokers = HaCluster(self, 3, args=["--ha-expected-backups=2"])
+        brokers = HaCluster(self, 3)
 
         # Start sender and receiver threads
-        sender = NumberedSender(brokers[0], max_depth=1000, failover_updates=False)
-        receiver = NumberedReceiver(brokers[0], sender=sender, failover_updates=False)
-        receiver.start()
-        sender.start()
+        n = 1;           # FIXME aconway 2012-06-10: n = 10
+        senders = [NumberedSender(brokers[0], max_depth=1024, failover_updates=False,
+                                 queue="test%s"%(i)) for i in xrange(n)]
+        receivers = [NumberedReceiver(brokers[0], sender=senders[i],
+                                      failover_updates=False,
+                                      queue="test%s"%(i)) for i in xrange(n)]
+        for r in receivers: r.start()
+        for s in senders: s.start()
 
         # Wait for sender & receiver to get up and running
-        assert retry(lambda: receiver.received > 100)
+        assert retry(lambda: receivers[0].received > 100), "%s<=100"%receivers[0].received
         # Kill and restart brokers in a cycle:
         endtime = time.time() + self.duration()
         i = 0
         try:
             while time.time() < endtime or i < 3: # At least 3 iterations
-                sender.sender.assert_running()
-                receiver.receiver.assert_running()
-                n = receiver.received
+                for s in senders: s.sender.assert_running()
+                for r in receivers: r.receiver.assert_running()
+                n = receivers[0].received
                 # FIXME aconway 2012-05-01: don't kill primary till it's active
-                # otherwise we can lose messages. When we implement non-promotion
-                # of catchup brokers we can make this stronger: wait only for
-                # there to be at least one ready backup.
-                assert retry(brokers[i%3].try_connect, 1)
+                # and backups are ready, otherwise we can lose messages. When we
+                # implement non-promotion of catchup brokers we can make this
+                # stronger: wait only for there to be at least one ready backup.
+                brokers[i%3].wait_status("active")
+                brokers[(i+1)%3].wait_status("ready")
+                brokers[(i+2)%3].wait_status("ready")
                 brokers.bounce(i%3)
                 i += 1
                 def enough():        # Verify we're still running
-                    receiver.check() # Verify no exceptions
-                    return receiver.received > n + 100
+                    receivers[0].check() # Verify no exceptions
+                    return receivers[0].received > n + 100
                 # FIXME aconway 2012-05-17: client reconnect sometimes takes > 1 sec.
-                assert retry(enough, 10)
+                assert retry(enough, 10), "Stalled: %s < %s+100"%(receivers[0].received, n)
+            for s in senders: s.stop()
+            for r in receivers: r.stop()
         except:
             traceback.print_exc()
             raise
         finally:
-            sender.stop()
-            receiver.stop()
             dead = []
             for i in xrange(3):
                 if not brokers[i].is_running(): dead.append(i)
                 brokers.kill(i, False)
             if dead: raise Exception("Brokers not running: %s"%dead)
+
+class RecoveryTests(BrokerTest):
+    """Tests for recovery after a failure."""
+
+    def test_queue_hold(self):
+        """Verify that the broker holds queues without sufficient backup,
+        i.e. does not complete messages sent to those queues."""
+
+        cluster = HaCluster(self, 4);
+        # Wait for the primary to be ready
+        cluster[0].wait_status("active")
+        # Create a queue before the failure.
+        s1 = cluster.connect(0).session().sender("q1;{create:always}")
+        for b in cluster: b.wait_backup("q1")
+        for i in xrange(100): s1.send(str(i))
+        # Kill primary and 2 backups
+        for i in [0,1,2]: cluster.kill(i, False)
+        cluster[3].promote()    # New primary, backups will be 1 and 2
+        cluster[3].wait_status("recovering")
+
+        def trySync(s):
+            try:
+                s.sync(timeout=.1)
+                self.fail("Expected Timeout exception")
+            except Timeout: pass
+
+        # Create a queue after the failure
+        s2 = cluster.connect(3).session().sender("q2;{create:always}")
+        # Verify that messages sent are not completed
+        for i in xrange(100,200): s1.send(str(i), sync=False); s2.send(str(i), sync=False)
+        trySync(s1)
+        self.assertEqual(s1.unsettled(), 100)
+        trySync(s2)
+        self.assertEqual(s2.unsettled(), 100)
+
+        # Verify we can receive even if sending is on hold:
+        cluster[3].assert_browse("q1", [str(i) for i in range(100)+range(100,200)])
+        # Restart backups, verify queues are released only when both backups are up
+        cluster.restart(1)
+        trySync(s1)
+        self.assertEqual(s1.unsettled(), 100)
+        trySync(s2)
+        self.assertEqual(s2.unsettled(), 100)
+        self.assertEqual(cluster[3].ha_status(), "recovering")
+        cluster.restart(2)
+
+        def settled(sender): sender.sync(); return sender.unsettled() == 0;
+        assert retry(lambda: settled(s1)), "Unsetttled=%s"%(s1.unsettled())
+        assert retry(lambda: settled(s2)), "Unsetttled=%s"%(s2.unsettled())
+        cluster[1].assert_browse_backup("q1", [str(i) for i in range(100)+range(100,200)])
+        cluster[1].assert_browse_backup("q2", [str(i) for i in range(100,200)])
+        cluster[3].wait_status("active"),
+        s1.session.connection.close()
+        s2.session.connection.close()
 
 if __name__ == "__main__":
     shutil.rmtree("brokertest.tmp", True)

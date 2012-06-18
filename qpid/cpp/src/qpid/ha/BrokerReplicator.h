@@ -23,11 +23,12 @@
  */
 
 #include "Counter.h"
-#include "Enum.h"
-#include "LogPrefix.h"
+#include "types.h"
+#include "ReplicationTest.h"
 #include "qpid/broker/Exchange.h"
 #include "qpid/types/Variant.h"
 #include <boost/shared_ptr.hpp>
+#include <boost/enable_shared_from_this.hpp>
 
 namespace qpid {
 
@@ -57,14 +58,17 @@ class QueueReplicator;
  * THREAD SAFE: Has no mutable state.
  *
  */
-class BrokerReplicator : public broker::Exchange
+class BrokerReplicator : public broker::Exchange,
+                         public boost::enable_shared_from_this<BrokerReplicator>
 {
   public:
     BrokerReplicator(HaBroker&, const boost::shared_ptr<broker::Link>&);
     ~BrokerReplicator();
-    std::string getType() const;
+
+    void initialize();
 
     // Exchange methods
+    std::string getType() const;
     bool bind(boost::shared_ptr<broker::Queue>, const std::string&, const framing::FieldTable*);
     bool unbind(boost::shared_ptr<broker::Queue>, const std::string&, const framing::FieldTable*);
     void route(broker::Deliverable&);
@@ -81,6 +85,7 @@ class BrokerReplicator : public broker::Exchange
     void doEventExchangeDelete(types::Variant::Map& values);
     void doEventBind(types::Variant::Map&);
     void doEventUnbind(types::Variant::Map&);
+    void doEventMembersUpdate(types::Variant::Map&);
 
     void doResponseQueue(types::Variant::Map& values);
     void doResponseExchange(types::Variant::Map& values);
@@ -89,10 +94,10 @@ class BrokerReplicator : public broker::Exchange
 
     QueueReplicatorPtr findQueueReplicator(const std::string& qname);
     void startQueueReplicator(const boost::shared_ptr<broker::Queue>&);
-    bool isReplicated(const types::Variant::Map& args, bool autodelete, bool exclusive);
     void ready();
 
-    LogPrefix logPrefix;
+    std::string logPrefix;
+    ReplicationTest replicationTest;
     HaBroker& haBroker;
     broker::Broker& broker;
     boost::shared_ptr<broker::Link> link;

@@ -165,7 +165,8 @@ pair<Bridge::shared_ptr, bool> LinkRegistry::declare(const std::string& name,
                                                      bool         dynamic,
                                                      uint16_t     sync,
                                                      Bridge::InitializeCallback init,
-                                                     const std::string& queueName
+                                                     const std::string& queueName,
+                                                     const std::string& altExchange
 )
 {
     Mutex::ScopedLock locker(lock);
@@ -208,7 +209,7 @@ pair<Bridge::shared_ptr, bool> LinkRegistry::declare(const std::string& name,
         bridge = Bridge::shared_ptr
           (new Bridge (name, &link, link.nextChannel(),
                        boost::bind(&LinkRegistry::destroyBridge, this, _1),
-                       args, init, queueName));
+                       args, init, queueName, altExchange));
         bridges[name] = bridge;
         link.add(bridge);
         if (durable && store)

@@ -281,7 +281,7 @@ endif (CMAKE_COMPILER_IS_GNUCXX)
 
 if (CMAKE_CXX_COMPILER_ID STREQUAL SunPro)
   set (COMPILER_FLAGS "-library=stlport4 -mt")
-  set (WARNING_FLAGS "+w2")
+  set (WARNING_FLAGS "+w")
 endif (CMAKE_CXX_COMPILER_ID STREQUAL SunPro)
 
 option(ENABLE_WARNINGS "Enable lots of compiler warnings (recommended)" ON)
@@ -626,34 +626,42 @@ set (ha_default ON)
 option(BUILD_HA "Build Active-Passive HA plugin" ${ha_default})
 if (BUILD_HA)
     set (ha_SOURCES
+	qpid/ha/BackupConnectionExcluder.h
+	qpid/ha/BrokerInfo.cpp
+	qpid/ha/BrokerInfo.h
+	qpid/ha/QueueGuard.cpp
+	qpid/ha/QueueGuard.h
+	qpid/ha/ReplicationTest.cpp
+	qpid/ha/ReplicationTest.h
         qpid/ha/Backup.cpp
         qpid/ha/Backup.h
-	qpid/ha/BrokerInfo.h
-	qpid/ha/BrokerInfo.cpp
         qpid/ha/BrokerReplicator.cpp
         qpid/ha/BrokerReplicator.h
-        qpid/ha/ConnectionExcluder.cpp
-        qpid/ha/ConnectionExcluder.h
+        qpid/ha/ConnectionObserver.cpp
+        qpid/ha/ConnectionObserver.h
         qpid/ha/Counter.h
-        qpid/ha/Enum.cpp
-        qpid/ha/Enum.h
         qpid/ha/HaBroker.cpp
         qpid/ha/HaBroker.h
         qpid/ha/HaPlugin.cpp
-        qpid/ha/LogPrefix.cpp
-        qpid/ha/LogPrefix.h
+        qpid/ha/Membership.cpp
+        qpid/ha/Membership.h
         qpid/ha/Primary.cpp
         qpid/ha/Primary.h
+        qpid/ha/PrimaryConnectionMonitor.h
         qpid/ha/QueueReplicator.cpp
         qpid/ha/QueueReplicator.h
         qpid/ha/ReplicatingSubscription.cpp
         qpid/ha/ReplicatingSubscription.h
         qpid/ha/Settings.h
+        qpid/ha/types.cpp
+        qpid/ha/types.h
+        qpid/ha/RemoteBackup.cpp
+        qpid/ha/RemoteBackup.h
     )
 
     add_library (ha MODULE ${ha_SOURCES})
     set_target_properties (ha PROPERTIES PREFIX "")
-    target_link_libraries (ha qpidcommon qpidbroker ${Boost_PROGRAM_OPTIONS_LIBRARY})
+    target_link_libraries (ha qpidtypes qpidcommon qpidbroker)
     if (CMAKE_COMPILER_IS_GNUCXX)
       set_target_properties (ha PROPERTIES
                              PREFIX ""
@@ -798,6 +806,7 @@ else (CMAKE_SYSTEM_NAME STREQUAL Windows)
     set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pthread")
     if (CMAKE_COMPILER_IS_GNUCXX)
       set (CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} ${GCC_CATCH_UNDEFINED} -pthread")
+      set (CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -pthread")
     endif (CMAKE_COMPILER_IS_GNUCXX)
     # On Linux override memory status module
     set (qpid_memstat_module
@@ -816,6 +825,12 @@ else (CMAKE_SYSTEM_NAME STREQUAL Windows)
       thread
     )
   endif (CMAKE_SYSTEM_NAME STREQUAL SunOS)
+
+  if (CMAKE_CXX_COMPILER_ID STREQUAL SunPro)
+    # -lmalloc needed for mallinfo.
+    set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -lmalloc")
+    set (CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -lmalloc")
+  endif (CMAKE_CXX_COMPILER_ID STREQUAL SunPro)
 
   set (qpidtypes_platform_SOURCES)
   set (qpidtypes_platform_LIBS

@@ -76,7 +76,7 @@ def error_line(filename, n=1):
     except: return ""
     return ":\n" + "".join(result)
 
-def retry(function, timeout=10, delay=.01):
+def retry(function, timeout=3, delay=.01):
     """Call function until it returns a true value or timeout expires.
     Double the delay for each retry. Returns what function returns if
     true, None if timeout expires."""
@@ -241,15 +241,13 @@ def find_in_file(str, filename):
 class Broker(Popen):
     "A broker process. Takes care of start, stop and logging."
     _broker_count = 0
+    _log_count = 0
 
-    def __str__(self): return "Broker<%s %s>"%(self.name, self.pname)
+    def __str__(self): return "Broker<%s %s :%d>"%(self.name, self.pname, self.port())
 
     def find_log(self):
-        self.log = "%s.log" % self.name
-        i = 1
-        while (os.path.exists(self.log)):
-            self.log = "%s-%d.log" % (self.name, i)
-            i += 1
+        self.log = "%03d:%s.log" % (Broker._log_count, self.name)
+        Broker._log_count += 1
 
     def get_log(self):
         return os.path.abspath(self.log)

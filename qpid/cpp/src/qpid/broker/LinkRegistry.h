@@ -109,7 +109,8 @@ namespace broker {
                 bool         dynamic,
                 uint16_t     sync,
                 Bridge::InitializeCallback=0,
-                const std::string& queueName=std::string()
+                const std::string& queueName="",
+                const std::string& altExchange=""
         );
         /** determine if Bridge exists */
         QPID_BROKER_EXTERN Bridge::shared_ptr

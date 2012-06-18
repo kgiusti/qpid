@@ -23,6 +23,7 @@
  */
 
 #include "QueueReplicator.h"    // For DEQUEUE_EVENT_KEY
+#include "BrokerInfo.h"
 #include "qpid/broker/SemanticState.h"
 #include "qpid/broker/QueueObserver.h"
 #include "qpid/broker/ConsumerFactory.h"
@@ -43,27 +44,25 @@ class Buffer;
 }
 
 namespace ha {
-class LogPrefix;
+class QueueGuard;
 
 /**
- * A susbcription that represents a backup replicating a queue.
+ * A susbcription that replicates to a remote backup.
  *
- * Runs on the primary. Delays completion of messages till the backup
- * has acknowledged, informs backup of locally dequeued messages.
+ * Runs on the primary. In conjunction with a QueueGuard, delays
+ * completion of messages till the backup has acknowledged, informs
+ * backup of locally dequeued messages.
  *
- * THREAD SAFE: Used as a consumer in subscription's connection
- * thread, and as a QueueObserver in arbitrary connection threads.
+ * THREAD SAFE: Called in subscription's connection thread but also
+ * in arbitrary connection threads via dequeued.
  *
  * Lifecycle: broker::Queue holds shared_ptrs to this as a consumer.
  *
  */
-class ReplicatingSubscription : public broker::SemanticState::ConsumerImpl,
-                                public broker::QueueObserver
+class ReplicatingSubscription : public broker::SemanticState::ConsumerImpl
 {
   public:
     struct Factory : public broker::ConsumerFactory {
-        HaBroker& haBroker;
-        Factory(HaBroker& hb) : haBroker(hb) {}
         boost::shared_ptr<broker::SemanticState::ConsumerImpl> create(
             broker::SemanticState* parent,
             const std::string& name, boost::shared_ptr<broker::Queue> ,
@@ -74,8 +73,8 @@ class ReplicatingSubscription : public broker::SemanticState::ConsumerImpl,
 
     // Argument names for consume command.
     static const std::string QPID_REPLICATING_SUBSCRIPTION;
-    static const std::string QPID_HIGH_SEQUENCE_NUMBER;
-    static const std::string QPID_LOW_SEQUENCE_NUMBER;
+    static const std::string QPID_BACK;
+    static const std::string QPID_FRONT;
     static const std::string QPID_BROKER_INFO;
 
     // TODO aconway 2012-05-23: these don't belong on ReplicatingSubscription
@@ -89,8 +88,7 @@ class ReplicatingSubscription : public broker::SemanticState::ConsumerImpl,
     static bool getNext(broker::Queue&, framing::SequenceNumber from,
                         framing::SequenceNumber& result);
 
-    ReplicatingSubscription(HaBroker&,
-                            broker::SemanticState* parent,
+    ReplicatingSubscription(broker::SemanticState* parent,
                             const std::string& name, boost::shared_ptr<broker::Queue> ,
                             bool ack, bool acquire, bool exclusive, const std::string& tag,
                             const std::string& resumeId, uint64_t resumeTtl,
@@ -98,43 +96,44 @@ class ReplicatingSubscription : public broker::SemanticState::ConsumerImpl,
 
     ~ReplicatingSubscription();
 
-    // QueueObserver overrides. NB called with queue lock held.
-    void enqueued(const broker::QueuedMessage&);
-    void dequeued(const broker::QueuedMessage&);
-    void acquired(const broker::QueuedMessage&) {}
-    void requeued(const broker::QueuedMessage&) {}
+    // Called via QueueGuard::dequeued.
+    //@return true if the message requires completion.
+    void dequeued(const broker::QueuedMessage& qm);
+
+    // Called during initial scan for dequeues.
+    void dequeued(framing::SequenceNumber first, framing::SequenceNumber last);
 
     // Consumer overrides.
     bool deliver(broker::QueuedMessage& msg);
     void cancel();
     void acknowledged(const broker::QueuedMessage&);
     bool browseAcquired() const { return true; }
+    // Hide the "queue deleted" error for a ReplicatingSubscription when a
+    // queue is deleted, this is normal and not an error.
+    bool hideDeletedError() { return true; }
 
-    bool hideDeletedError();
-    /** Initialization that must be done after construction because it
-     * requires a shared_ptr to this to exist.
+    /** Initialization that must be done separately from construction
+     * because it requires a shared_ptr to this to exist.
      */
     void initialize();
 
+    BrokerInfo getBrokerInfo() const { return info; }
+
   protected:
     bool doDispatch();
-  private:
-    typedef std::map<framing::SequenceNumber, broker::QueuedMessage> Delayed;
 
-    HaBroker&  haBroker;
-    LogPrefix logPrefix;
+  private:
+    std::string logPrefix;
     boost::shared_ptr<broker::Queue> dummy; // Used to send event messages
-    Delayed delayed;
     framing::SequenceSet dequeues;
     framing::SequenceNumber backupPosition;
-    framing::SequenceNumber readyPosition;
     bool ready;
+    BrokerInfo info;
+    boost::shared_ptr<QueueGuard> guard;
 
-    void complete(const broker::QueuedMessage&, const sys::Mutex::ScopedLock&);
-    void cancelComplete(const Delayed::value_type& v, const sys::Mutex::ScopedLock&);
-    void sendDequeueEvent(const sys::Mutex::ScopedLock&);
-    void sendPositionEvent(framing::SequenceNumber, const sys::Mutex::ScopedLock&);
-    void setReady(const sys::Mutex::ScopedLock&);
+    void sendDequeueEvent(sys::Mutex::ScopedLock&);
+    void sendPositionEvent(framing::SequenceNumber, sys::Mutex::ScopedLock&);
+    void setReady();
     void sendEvent(const std::string& key, framing::Buffer&);
   friend struct Factory;
 };

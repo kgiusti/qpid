@@ -108,7 +108,6 @@ Broker::Options::Options(const std::string& name) :
     noDataDir(0),
     port(DEFAULT_PORT),
     workerThreads(5),
-    maxConnections(500),
     connectionBacklog(10),
     enableMgmt(1),
     mgmtPublish(1),
@@ -148,7 +147,6 @@ Broker::Options::Options(const std::string& name) :
         ("no-data-dir", optValue(noDataDir), "Don't use a data directory.  No persistent configuration will be loaded or stored")
         ("port,p", optValue(port,"PORT"), "Tells the broker to listen on PORT")
         ("worker-threads", optValue(workerThreads, "N"), "Sets the broker thread pool size")
-        ("max-connections", optValue(maxConnections, "N"), "Sets the maximum allowed connections")
         ("connection-backlog", optValue(connectionBacklog, "N"), "Sets the connection backlog limit for the server socket")
         ("mgmt-enable,m", optValue(enableMgmt,"yes|no"), "Enable Management")
         ("mgmt-publish", optValue(mgmtPublish,"yes|no"), "Enable Publish of Management Data ('no' implies query-only)")
@@ -175,6 +173,7 @@ Broker::Options::Options(const std::string& name) :
         ("link-maintenace-interval", optValue(linkMaintenanceInterval, "SECONDS"))
         ("link-heartbeat-interval", optValue(linkHeartbeatInterval, "SECONDS"))
         ("max-negotiate-time", optValue(maxNegotiateTime, "MilliSeconds"), "Maximum time a connection can take to send the initial protocol negotiation")
+        ("federation-tag", optValue(fedTag, "NAME"), "Override the federation tag")
         ;
 }
 
@@ -212,7 +211,6 @@ Broker::Broker(const Broker::Options& conf) :
     inCluster(false),
     clusterUpdatee(false),
     expiryPolicy(new ExpiryPolicy),
-    connectionCounter(conf.maxConnections),
     getKnownBrokers(boost::bind(&Broker::getKnownBrokersImpl, this)),
     deferDelivery(boost::bind(&Broker::deferDeliveryImpl, this, _1, _2))
 {
@@ -231,7 +229,6 @@ Broker::Broker(const Broker::Options& conf) :
         mgmtObject->set_systemRef(system->GetManagementObject()->getObjectId());
         mgmtObject->set_port(conf.port);
         mgmtObject->set_workerThreads(conf.workerThreads);
-        mgmtObject->set_maxConns(conf.maxConnections);
         mgmtObject->set_connBacklog(conf.connectionBacklog);
         mgmtObject->set_mgmtPubInterval(conf.mgmtPubInterval);
         mgmtObject->set_mgmtPublish(conf.mgmtPublish);
@@ -248,8 +245,11 @@ Broker::Broker(const Broker::Options& conf) :
         // management schema correct.
         Vhost* vhost = new Vhost(this, this);
         vhostObject = Vhost::shared_ptr(vhost);
-        framing::Uuid uuid(managementAgent->getUuid());
-        federationTag = uuid.str();
+        if (conf.fedTag.empty()) {
+            framing::Uuid uuid(managementAgent->getUuid());
+            federationTag = uuid.str();
+        } else
+            federationTag = conf.fedTag;
         vhostObject->setFederationTag(federationTag);
 
         queues.setParent(vhost);
@@ -258,8 +258,11 @@ Broker::Broker(const Broker::Options& conf) :
     } else {
         // Management is disabled so there is no broker management ID.
         // Create a unique uuid to use as the federation tag.
-        framing::Uuid uuid(true);
-        federationTag = uuid.str();
+        if (conf.fedTag.empty()) {
+            framing::Uuid uuid(true);
+            federationTag = uuid.str();
+        } else
+            federationTag = conf.fedTag;
     }
 
     QueuePolicy::setDefaultMaxSize(conf.queueLimit);
@@ -350,7 +353,7 @@ Broker::Broker(const Broker::Options& conf) :
         knownBrokers.push_back(Url(conf.knownHosts));
     }
 
-    } catch (const std::exception& /*e*/) {
+    } catch (const std::exception&) {
         finalize();
         throw;
     }
@@ -1223,6 +1226,7 @@ void Broker::bind(const std::string& queueName,
         throw framing::NotFoundException(QPID_MSG("Bind failed. No such exchange: " << exchangeName));
     } else {
         if (queue->bind(exchange, key, arguments)) {
+            getConfigurationObservers().bind(exchange, queue, key, arguments);
             if (managementAgent.get()) {
                 managementAgent->raiseEvent(_qmf::EventBind(connectionId, userId, exchangeName,
                                                   queueName, key, ManagementAgent::toMap(arguments)));
@@ -1258,6 +1262,8 @@ void Broker::unbind(const std::string& queueName,
             if (exchange->isDurable() && queue->isDurable()) {
                 store->unbind(*exchange, *queue, key, qpid::framing::FieldTable());
             }
+            getConfigurationObservers().unbind(
+                exchange, queue, key, framing::FieldTable());
             if (managementAgent.get()) {
                 managementAgent->raiseEvent(_qmf::EventUnbind(connectionId, userId, exchangeName, queueName, key));
             }

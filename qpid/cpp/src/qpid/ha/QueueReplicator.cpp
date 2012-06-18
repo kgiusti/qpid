@@ -21,7 +21,6 @@
 
 #include "Counter.h"
 #include "QueueReplicator.h"
-#include "HaBroker.h"
 #include "ReplicatingSubscription.h"
 #include "qpid/broker/Bridge.h"
 #include "qpid/broker/Broker.h"
@@ -60,16 +59,15 @@ bool QueueReplicator::isEventKey(const std::string key) {
     return ret;
 }
 
-QueueReplicator::QueueReplicator(HaBroker& hb,
+QueueReplicator::QueueReplicator(const BrokerInfo& info,
                                  boost::shared_ptr<Queue> q,
                                  boost::shared_ptr<Link> l)
     : Exchange(replicatorName(q->getName()), 0, q->getBroker()),
-      haBroker(hb), logPrefix(hb), queue(q), link(l)
+      logPrefix("Backup queue "+q->getName()+": "),
+      queue(q), link(l), brokerInfo(info)
 {
     Uuid uuid(true);
     bridgeName = replicatorName(q->getName()) + std::string(".") + uuid.str();
-    logPrefix.setMessage(q->getName());
-    QPID_LOG(info, logPrefix << "Created");
 }
 
 // This must be separate from the constructor so we can call shared_from_this.
@@ -116,20 +114,24 @@ void QueueReplicator::initializeBridge(Bridge& bridge, SessionHandler& sessionHa
     FieldTable settings;
     settings.setInt(ReplicatingSubscription::QPID_REPLICATING_SUBSCRIPTION, 1);
     settings.setInt(QPID_SYNC_FREQUENCY, 1); // FIXME aconway 2012-05-22: optimize?
-    settings.setInt(ReplicatingSubscription::QPID_HIGH_SEQUENCE_NUMBER,
+    settings.setInt(ReplicatingSubscription::QPID_BACK,
                     queue->getPosition());
     settings.setTable(ReplicatingSubscription::QPID_BROKER_INFO,
-                      haBroker.getBrokerInfo().asFieldTable());
+                      brokerInfo.asFieldTable());
     SequenceNumber front;
     if (ReplicatingSubscription::getFront(*queue, front))
-        settings.setInt(ReplicatingSubscription::QPID_LOW_SEQUENCE_NUMBER, front);
+        settings.setInt(ReplicatingSubscription::QPID_FRONT, front);
     peer.getMessage().subscribe(
         args.i_src, args.i_dest, 0/*accept-explicit*/, 1/*not-acquired*/,
         false/*exclusive*/, "", 0, settings);
     // FIXME aconway 2012-05-22: use a finite credit window
     peer.getMessage().flow(getName(), 0, 0xFFFFFFFF);
     peer.getMessage().flow(getName(), 1, 0xFFFFFFFF);
-    QPID_LOG(debug, logPrefix << "Subscribed bridge: " << bridgeName << " " << settings);
+
+    qpid::Address primary;
+    link->getRemoteAddress(primary);
+    QPID_LOG(info, logPrefix << "Connected to " << primary << "(" << bridgeName << ")");
+    QPID_LOG(trace, logPrefix << "Subscription settings: " << settings);
 }
 
 namespace {
@@ -143,13 +145,11 @@ template <class T> T decodeContent(Message& m) {
 }
 }
 
-void QueueReplicator::dequeue(SequenceNumber n,  const sys::Mutex::ScopedLock&) {
+void QueueReplicator::dequeue(SequenceNumber n, sys::Mutex::ScopedLock&) {
     // Thread safe: only calls thread safe Queue functions.
-    if (queue->getPosition() >= n) { // Ignore messages we  haven't reached yet
-        QueuedMessage message;
-        if (queue->acquireMessageAt(n, message))
-            queue->dequeue(0, message);
-    }
+    QueuedMessage message;
+    if (queue->acquireMessageAt(n, message))
+        queue->dequeue(0, message);
 }
 
 // Called in connection thread of the queues bridge to primary.
@@ -160,6 +160,7 @@ void QueueReplicator::route(Deliverable& msg)
         sys::Mutex::ScopedLock l(lock);
         if (!isEventKey(key)) {
             msg.deliverTo(queue);
+            // FIXME aconway 2012-06-10: race, position may have moved
             QPID_LOG(trace, logPrefix << "Enqueued message " << queue->getPosition());
         }
         else if (key == DEQUEUE_EVENT_KEY) {

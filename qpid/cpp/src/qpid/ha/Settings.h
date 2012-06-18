@@ -22,7 +22,7 @@
  *
  */
 
-#include "Enum.h"
+#include "types.h"
 #include <string>
 
 namespace qpid {
@@ -34,13 +34,12 @@ namespace ha {
 class Settings
 {
   public:
-    Settings() : cluster(false), expectedBackups(0), replicateDefault(NONE)
+    Settings() : cluster(false), replicateDefault(NONE)
     {}
 
     bool cluster;               // True if we are a cluster member.
     std::string clientUrl;
     std::string brokerUrl;
-    size_t expectedBackups;
     Enum<ReplicateLevel> replicateDefault;
     std::string username, password, mechanism;
   private:

@@ -1,5 +1,5 @@
-#ifndef QPID_HA_LOGPREFIX_H
-#define QPID_HA_LOGPREFIX_H
+#ifndef QPID_HA_PRIMARYCONNECTIONOBSERVER_H
+#define QPID_HA_PRIMARYCONNECTIONOBSERVER_H
 
 /*
  *
@@ -22,38 +22,40 @@
  *
  */
 
-#include "Enum.h"
-#include <iosfwd>
-#include <string>
+#include "types.h"
+#include "ConnectionObserver.h"
+#include "qpid/broker/ConnectionObserver.h"
+#include "qpid/types/Uuid.h"
+#include "qpid/sys/Mutex.h"
+#include <boost/function.hpp>
 
 namespace qpid {
-namespace ha {
 
+namespace broker {
+class Connection;
+}
+
+namespace ha {
 class HaBroker;
 
 /**
- * Standard information to prefix log messages.
+ * Monitor connections on a primary broker. Update membership and
+ * primary readiness.
+ *
+ * THREAD SAFE: has no state, just mediates between other thread-safe objects.
  */
-class LogPrefix
+// FIXME aconway 2012-06-06: rename observer
+class PrimaryConnectionMonitor : public broker::ConnectionObserver
 {
   public:
-    /** For use by all classes other than HaBroker */
-    LogPrefix(HaBroker& hb, const std::string& queue=std::string());
-    LogPrefix(LogPrefix& lp, const std::string& queue);
-    /** For use by the HaBroker itself. */
-    LogPrefix(BrokerStatus&);
-
-    void setMessage(const std::string&);
+    PrimaryConnectionMonitor(Primary& p) : primary(p) {}
+    void opened(broker::Connection& connection) { primary.opened(connection); }
+    void closed(broker::Connection& connection) { primary.closed(connection); }
 
   private:
-    HaBroker* haBroker;
-    BrokerStatus* status;
-    std::string tail;
-  friend std::ostream& operator<<(std::ostream& o, const LogPrefix& l);
+    Primary& primary;
 };
-
-std::ostream& operator<<(std::ostream& o, const LogPrefix& l);
 
 }} // namespace qpid::ha
 
-#endif  /*!QPID_HA_LOGPREFIX_H*/
+#endif  /*!QPID_HA_PRIMARYCONNECTIONOBSERVER_H*/

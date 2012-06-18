@@ -22,7 +22,8 @@
  *
  */
 
-#include "LogPrefix.h"
+#include "types.h"
+#include "BrokerInfo.h"
 #include "qpid/sys/Mutex.h"
 #include <boost/shared_ptr.hpp>
 #include <map>
@@ -32,37 +33,67 @@ namespace qpid {
 
 namespace broker {
 class Queue;
+class Connection;
+class ConnectionObserver;
+class ConfigurationObserver;
 }
 
 namespace ha {
 class HaBroker;
+class ReplicatingSubscription;
+class RemoteBackup;
+class QueueGuard;
 
 /**
- * State associated with a primary broker.  Tracks replicating
- * subscriptions to determine when primary is ready.
+ * State associated with a primary broker:
+ * - sets queue guards and tracks readiness of initial backups till active.
+ * - sets queue guards on new queues for each backup.
  *
- * THREAD SAFE: readyReplica is called in arbitray threads.
+ * THREAD SAFE: called concurrently in arbitrary connection threads.
  */
 class Primary
 {
   public:
-    static Primary* get() { return instance; }
-    Primary(HaBroker& b);
+    typedef boost::shared_ptr<broker::Queue> QueuePtr;
 
-    void readyReplica(const std::string& q);
+    static Primary* get() { return instance; }
+
+    Primary(HaBroker& hb, const BrokerInfo::Set& expectedBackups);
+    ~Primary();
+
+    void readyReplica(const ReplicatingSubscription&);
     void removeReplica(const std::string& q);
 
-  private:
-    typedef std::map<std::string, size_t> QueueCounts;
+    // Called via ConfigurationObserver
+    void queueCreate(const QueuePtr&);
+    void queueDestroy(const QueuePtr&);
 
-    void activate(sys::Mutex::ScopedLock&);
+    // Called via ConnectionObserver
+    void opened(broker::Connection& connection);
+    void closed(broker::Connection& connection);
+
+    boost::shared_ptr<QueueGuard> getGuard(const QueuePtr& q, const BrokerInfo&);
+
+  private:
+    typedef std::map<types::Uuid, boost::shared_ptr<RemoteBackup> > BackupMap;
+    typedef std::set<boost::shared_ptr<RemoteBackup> > BackupSet;
+
+    void checkReady(sys::Mutex::ScopedLock&);
+    void checkReady(BackupMap::iterator, sys::Mutex::ScopedLock&);
 
     sys::Mutex lock;
     HaBroker& haBroker;
-    LogPrefix logPrefix;
-    QueueCounts queues;
-    size_t expected, unready;
-    bool activated;
+    std::string logPrefix;
+    bool active;
+    BackupSet initialBackups;
+    /**
+     * Backups is a map of all the remote backups we know about: any expected
+     * backups plus all actual backups that have connected. We do not remove
+     * entries when a backup disconnects. @see Primary::closed()
+     */
+    BackupMap backups;
+    boost::shared_ptr<broker::ConnectionObserver> connectionObserver;
+    boost::shared_ptr<broker::ConfigurationObserver> configurationObserver;
 
     static Primary* instance;
 };
