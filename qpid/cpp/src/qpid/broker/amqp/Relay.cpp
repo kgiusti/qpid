@@ -45,6 +45,11 @@ bool Relay::send(pn_link_t* link)
         }
     }
     c->initOut(link);
+
+    pn_delivery_t *d = pn_link_current(link);
+    if (d && pn_delivery_writable(d)) {
+        if (out) out->handle(d);
+    }
     return true;
 }
 
