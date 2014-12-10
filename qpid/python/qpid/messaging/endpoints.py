@@ -569,6 +569,7 @@ class Session(Endpoint):
     self.closed = False
 
     self._lock = connection._lock
+    self._msg_received = None
 
   def __repr__(self):
     return "<Session %s>" % self.name
@@ -599,6 +600,11 @@ class Session(Endpoint):
   def check_closed(self):
     if self.closed:
       raise SessionClosed()
+
+  def message_received(self, msg):
+      self.incoming.append(msg)
+      if self._msg_received:
+          self._msg_received()
 
   @synchronized
   def sender(self, target, **options):
@@ -683,6 +689,10 @@ class Session(Endpoint):
         log.debug("RETR[%s]: %s", self.log_id, msg)
         return msg
     return None
+
+  @synchronized
+  def _on_message(self, handler):
+      self._msg_received = handler
 
   @synchronized
   def next_receiver(self, timeout=None):
